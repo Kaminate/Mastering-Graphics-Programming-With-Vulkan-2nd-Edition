@@ -6,7 +6,7 @@
 
 // Scene common code /////////////////////////////////////////////////////
 
-ConstantBuffer<GpuFrameConstants> frame : register(b0, space1);
+[[vk::binding(0, 1)]] ConstantBuffer<GpuFrameConstants> frame : register(b0, space1);
 
 bool enable_volumetric_fog_opacity_anti_aliasing() {
     return (frame.volumetric_fog_application_options & 1) == 1;

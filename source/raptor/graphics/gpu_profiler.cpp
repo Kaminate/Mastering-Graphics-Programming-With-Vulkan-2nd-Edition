@@ -848,6 +848,10 @@ void GpuProfiler::init( GpuDevice* gpu_device_, Allocator* allocator_,
     //u8* memory = rallocam( allocated_size, allocator );
 
     timestamps.init( allocator, total_time_queries, total_time_queries );
+
+    const u32 resolved_capacity = queries_per_thread * num_threads * k_command_queue_count * CommandBufferManager::k_num_cbs_per_thread;
+    resolved_timestamps.init( allocator, resolved_capacity, resolved_capacity );
+    resolved_timestamps_count = 0;
    // memset( timestamps.data, 0, sizeof( GPUTimeQuery ) * total_time_queries );
 
     const u32 num_trees = num_pools * CommandBufferManager::k_num_cbs_per_thread;
@@ -907,6 +911,7 @@ void GpuProfiler::shutdown() {
 
     thread_frame_query_pools.shutdown();
     timestamps.shutdown();
+    resolved_timestamps.shutdown();
 }
 
 u32 timestamp_base_offset( const CommandBuffer* cb, u32 queries_per_thread ) {
@@ -996,10 +1001,12 @@ void GpuProfiler::get_query_pool_results( ArenaAllocator* temp_allocator ) {
     frame_pipeline_statistics.reset();
     temp_allocator->clear();
 
-    const u32 frame_to_query = gpu_device->previous_frame;
+    
+    const u32 frame_to_query = gpu_device->current_frame;
 
     resolved_frame_index = frame_to_query;
-    resolved_frame_valid = true;
+    resolved_frame_valid = false;
+    resolved_timestamps_count = 0;
 
     for ( u32 t = 0; t < num_threads; ++t ) {
         for ( u32 q = 0; q < k_command_queue_count; ++q ) {
@@ -1021,14 +1028,20 @@ void GpuProfiler::get_query_pool_results( ArenaAllocator* temp_allocator ) {
 
                 u64* timestamps_data = (u64*)ralloca( query_count * 2 * sizeof( u64 ), temp_allocator );
 
-                vkGetQueryPoolResults( gpu_device->vulkan_device,
-                                       pool.vulkan_timestamp_query_pool,
-                                       query_base_index,
-                                       query_count * 2,
-                                       sizeof( u64 ) * query_count * 2,
-                                       timestamps_data,
-                                       sizeof( u64 ),
-                                       VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT );
+                const VkResult result = vkGetQueryPoolResults( gpu_device->vulkan_device,
+                                                               pool.vulkan_timestamp_query_pool,
+                                                               query_base_index,
+                                                               query_count * 2,
+                                                               sizeof( u64 ) * query_count * 2,
+                                                               timestamps_data,
+                                                               sizeof( u64 ),
+                                                               VK_QUERY_RESULT_64_BIT );
+                
+                if ( result != VK_SUCCESS ) {
+                    continue;
+                }
+
+                resolved_frame_valid = true;
 
 
                 // Base offset into the CPU-side timestamps array for this (frame,thread,queue) pool.
@@ -1051,9 +1064,13 @@ void GpuProfiler::get_query_pool_results( ArenaAllocator* temp_allocator ) {
                     ts.begin = start;
                     ts.end = end;
                     ts.elapsed_ms = elapsed_time;
-                    ts.frame_index = gpu_device->absolute_frame - 1;
+                    ts.frame_index = gpu_device->absolute_frame - k_max_frames;
                     ts.queue_type = queue_type;
                 }
+
+                raptor::memory_copy( &resolved_timestamps[ resolved_timestamps_count ], &timestamps[ query_offset ],
+                                     sizeof( GPUTimeQuery ) * query_count );
+                resolved_timestamps_count += query_count;
 
                 // Pipeline statistics only if this pool has them (graphics only).
                 if ( pool.vulkan_pipeline_stats_query_pool != VK_NULL_HANDLE ) {
@@ -1061,17 +1078,19 @@ void GpuProfiler::get_query_pool_results( ArenaAllocator* temp_allocator ) {
                     u64* pipeline_statistics_data =
                         (u64*)ralloca( GpuPipelineStatistics::Count * sizeof( u64 ), temp_allocator );
 
-                    vkGetQueryPoolResults( gpu_device->vulkan_device,
-                                           pool.vulkan_pipeline_stats_query_pool,
-                                           0,
-                                           1,
-                                           GpuPipelineStatistics::Count * sizeof( u64 ),
-                                           pipeline_statistics_data,
-                                           sizeof( u64 ),
-                                           VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT );
+                    const VkResult stats_result = vkGetQueryPoolResults( gpu_device->vulkan_device,
+                                                                         pool.vulkan_pipeline_stats_query_pool,
+                                                                         0,
+                                                                         1,
+                                                                         GpuPipelineStatistics::Count * sizeof( u64 ),
+                                                                         pipeline_statistics_data,
+                                                                         sizeof( u64 ),
+                                                                         VK_QUERY_RESULT_64_BIT );
 
-                    for ( u32 i = 0; i < GpuPipelineStatistics::Count; ++i ) {
-                        frame_pipeline_statistics.statistics[ i ] += pipeline_statistics_data[ i ];
+                    if ( stats_result == VK_SUCCESS ) {
+                        for ( u32 i = 0; i < GpuPipelineStatistics::Count; ++i ) {
+                            frame_pipeline_statistics.statistics[ i ] += pipeline_statistics_data[ i ];
+                        }
                     }
                 }
             }
@@ -1083,34 +1102,10 @@ void GpuProfiler::get_query_pool_results( ArenaAllocator* temp_allocator ) {
 
 
 u32 GpuProfiler::resolve( u32 current_frame, GPUTimeQuery* timestamps_to_fill ) {
-    u32 copied_timestamps = 0;
+    
+    raptor::memory_copy( timestamps_to_fill, resolved_timestamps.data, sizeof( GPUTimeQuery ) * resolved_timestamps_count );
 
-    for ( u32 t = 0; t < num_threads; ++t ) {
-        for ( u32 q = 0; q < k_command_queue_count; ++q ) {
-
-            const u32 pool_index = pool_from_indices( current_frame, t, (CommandQueueType)q );
-            GpuThreadFrameQueryPools& thread_pools = thread_frame_query_pools[ pool_index ];
-
-            for ( u32 cb_i = 0; cb_i < CommandBufferManager::k_num_cbs_per_thread; ++cb_i ) {
-
-                GpuTimeQueryTree* time_query = thread_pools.time_queries[ cb_i ];
-                if ( !time_query || time_query->allocated_time_query == 0 ) {
-                    continue;
-                }
-
-                const u32 tree_index = pool_index * CommandBufferManager::k_num_cbs_per_thread + cb_i;
-
-                raptor::memory_copy(
-                    timestamps_to_fill + copied_timestamps,
-                    &timestamps[ tree_index * queries_per_thread ],
-                    sizeof( GPUTimeQuery ) * time_query->allocated_time_query );
-
-                copied_timestamps += time_query->allocated_time_query;
-            }
-        }
-    }
-
-    return copied_timestamps;
+    return resolved_timestamps_count;
 }
 
 // GpuTimeQueryTree ///////////////////////////////////////////////////////

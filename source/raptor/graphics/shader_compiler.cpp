@@ -132,6 +132,88 @@ static u64 shader_concatenate_from_file( cstring filename, StringBuffer& path_bu
     return hashed_memory;
 }
 
+// Include hashing ///////////////////////////////////////////////////////
+static cstring k_include_roots[] = { "glsl/", "slang/", "slang/chapter15/" };
+
+//
+struct IncludeHashes {
+    u64                             hash            = 0;
+    u64                             visited[ 128 ];         // Content hashes already added: stops cycles and repeats.
+    u32                             visited_count   = 0;
+}; // struct IncludeHashes
+
+static bool include_find( cstring including_folder, cstring name, u32 name_length, char* out_path, u32 out_size ) {
+    snprintf( out_path, out_size, "%s%.*s", including_folder, ( int )name_length, name );
+    if ( file_exists( out_path ) ) {
+        return true;
+    }
+    for ( u32 i = 0; i < ArraySize( k_include_roots ); ++i ) {
+        snprintf( out_path, out_size, "%s%s%.*s", RAPTOR_SHADER_FOLDER, k_include_roots[ i ], ( int )name_length, name );
+        if ( file_exists( out_path ) ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Keeps the folder of a path, separator included: "a/b/c.h" -> "a/b/".
+static void include_folder( char* path ) {
+    char* slash = strrchr( path, '/' );
+    char* backslash = strrchr( path, '\\' );
+    char* separator = slash > backslash ? slash : backslash;
+    if ( separator ) {
+        *( separator + 1 ) = 0;
+    } else {
+        path[ 0 ] = 0;
+    }
+}
+
+static void include_hash_recursive( cstring code, cstring code_folder, IncludeHashes& includes, ArenaAllocator* temp_allocator ) {
+    cstring cursor = code;
+    while ( ( cursor = strstr( cursor, "#include" ) ) != nullptr ) {
+        cursor += strlen( "#include" );
+
+        // Only #include "file" on the same line.
+        cstring end_of_line = strchr( cursor, '\n' );
+        cstring quote = strchr( cursor, '"' );
+        if ( quote == nullptr || ( end_of_line != nullptr && quote > end_of_line ) ) {
+            continue;
+        }
+        cstring next_quote = strchr( quote + 1, '"' );
+        if ( next_quote == nullptr || ( end_of_line != nullptr && next_quote > end_of_line ) ) {
+            continue;
+        }
+
+        const u32 name_length = ( u32 )( next_quote - ( quote + 1 ) );
+        char path[ 512 ];
+        if ( !include_find( code_folder, quote + 1, name_length, path, sizeof( path ) ) ) {
+            rprint( "Shader cache: include %.*s not found, its changes will not recompile the shader\n", ( int )name_length, quote + 1 );
+            continue;
+        }
+
+        sizet marker = temp_allocator->get_marker();
+        FileReadResult read_result = file_read_text( path, temp_allocator );
+        if ( read_result.data ) {
+            const u64 file_hash = hash_bytes( read_result.data, strlen( read_result.data ) );
+
+            bool seen = false;
+            for ( u32 i = 0; i < includes.visited_count && !seen; ++i ) {
+                seen = includes.visited[ i ] == file_hash;
+            }
+
+            if ( !seen && includes.visited_count < ArraySize( includes.visited ) ) {
+                includes.visited[ includes.visited_count++ ] = file_hash;
+                // Order matters: the same files in another order give another hash.
+                includes.hash = hash_bytes( ( void* )&file_hash, sizeof( u64 ), includes.hash );
+
+                include_folder( path );
+                include_hash_recursive( read_result.data, path, includes, temp_allocator );
+            }
+        }
+        temp_allocator->free_marker( marker );
+    }
+}
+
 static void compute_slang_hash( ShaderCompilationStage& shader_stage, StringBuffer& path_buffer, StringBuffer& shader_buffer, ArenaAllocator* temp_allocator ) {
     path_buffer.clear();
 
@@ -140,35 +222,10 @@ static void compute_slang_hash( ShaderCompilationStage& shader_stage, StringBuff
     cstring shader_path = path_buffer.append_use_f( "%s%s", RAPTOR_SHADER_FOLDER, shader_stage.source.slang );
     FileReadResult shader_read_result = file_read_text( shader_path, temp_allocator );
     if ( shader_read_result.data ) {
-        // NOTE(marco): do this here as strtok messes with the data
         shader_buffer.append_m( shader_read_result.data, strlen( shader_read_result.data ) );
         hashed_memory = hash_bytes( shader_read_result.data, strlen( shader_read_result.data ) );
         shader_stage.shader_file_hashes.push( hashed_memory );
-
-        cstring line = strtok( shader_read_result.data, "\n" );
-        while ( line ) {
-            cstring include = strstr( line, "#include" );
-            if ( include ) {
-                cstring quote = strstr( include, "\"");
-                cstring next_quote = strstr( quote + 1, "\"" );
-
-                StringView header_file( quote + 1, next_quote - ( quote + 1 ) );
-                // TODO(marco): hack, read folder relative path from source_file
-                // TODO(marco): don't parse the same header multiple times
-                cstring header_path = path_buffer.data + path_buffer.current_size;
-                path_buffer.append_f( "%s%s/", RAPTOR_SHADER_FOLDER, "slang" );
-                path_buffer.append_use( header_file );
-
-                FileReadResult header_read_result = file_read_text( header_path, temp_allocator );
-                if ( header_read_result.data ) {
-                    hashed_memory = hash_bytes( header_read_result.data, strlen( header_read_result.data ) );
-
-                    shader_stage.shader_file_hashes.push( hashed_memory );
-                }
-            }
-
-            line = strtok( NULL, "\n" );
-        }
+        // Includes are hashed for both languages in read_source_from_file_and_add_hashes.
     } else {
         rprint( "Cannot read file %s\n", shader_path );
     }
@@ -774,48 +831,16 @@ void ShaderCompiler::read_source_from_file_and_add_hashes( ShaderCompilationStag
 
     u32 source_code_size = ( u32 )strlen( source_code );
 
-    // If we use includes, we need to parse them to add their hashes. The current implementation is not recursive and
-    // not optimized
-    u32 read = 0;
-    u32 offset = 0;
-    const u32 buffer_size = 256;
-    char line[ buffer_size ]{ };
-
-    char relative_path_buffer[ 512 ]{};
+    // Every file reached by #include, recursively, from the main file and the prepended headers.
+    // One hash for all of them: shader_file_hashes has room for the headers plus two entries.
+    char source_folder[ 512 ];
     cstring source_path = shader_stage.source.path( language );
-    if ( source_path != nullptr ) {
-        const char* relative_path = strrchr( source_path, '/' );
-        if ( relative_path ) {
-            strncpy( relative_path_buffer, source_path, relative_path - source_path + 1 );
-        }
-    }
+    snprintf( source_folder, sizeof( source_folder ), "%s%s", RAPTOR_SHADER_FOLDER, source_path ? source_path : "" );
+    include_folder( source_folder );
 
-    while ( ( read = parse_line( source_code, source_code_size, offset, &offset, line, buffer_size ) ) != -1) {
-        if (  strstr( line, "#include" ) != nullptr ) {
-            cstring quote = strstr( line, "\"");
-            cstring next_quote = strstr( quote + 1, "\"" );
-
-            StringView header_file( quote + 1, next_quote - ( quote + 1 ) );
-
-            path_buffer.clear();
-
-            cstring header_path = path_buffer.current();
-            path_buffer.append_f( "%s%s", RAPTOR_SHADER_FOLDER, relative_path_buffer );
-            path_buffer.append( header_file );
-            path_buffer.close_current_string();
-
-            FileReadResult header_read_result = file_read_text( header_path, temp_allocator );
-            if ( header_read_result.data ) {
-                u64 shader_file_hash = hash_bytes( header_read_result.data, strlen( header_read_result.data ) );
-
-                u64* end = shader_stage.shader_file_hashes.data + shader_stage.shader_file_hashes.size;
-                u64* entry = std::find( shader_stage.shader_file_hashes.data, end, shader_file_hash );
-                if ( entry == end ) {
-                    shader_stage.shader_file_hashes.push( shader_file_hash );
-                }
-            }
-        }
-    }
+    IncludeHashes includes;
+    include_hash_recursive( source_code, source_folder, includes, temp_allocator );
+    shader_stage.shader_file_hashes.push( includes.hash );
 
     // Debug print of final code if needed.
     //rprint( "\n\n%s\n\n\n", code );
@@ -1299,7 +1324,7 @@ bool ShaderCompiler::compile_and_cache_shader( ShaderCompilationStage& compilati
         // Cache spirv bytecode
         if ( shader_create_info.pCode ) {
             spirv_bytecode.data = shader_create_info.pCode;
-            spirv_bytecode.size = shader_create_info.codeSize;
+            spirv_bytecode.size = shader_create_info.codeSize / sizeof(u32);
 
             if ( use_cache ) {
                 // Write hashes
@@ -1310,7 +1335,7 @@ bool ShaderCompiler::compile_and_cache_shader( ShaderCompilationStage& compilati
                 }
                 rprint( "\n\n" );*/
                 // Write spirv
-                file_write_binary( shader_spirv_path, ( void* )shader_create_info.pCode, sizeof( u32 ) * shader_create_info.codeSize );
+                file_write_binary( shader_spirv_path, ( void* )shader_create_info.pCode, shader_create_info.codeSize );
             }
 
             // Reflect shader and write reflection to file
@@ -1508,6 +1533,21 @@ VkShaderModuleCreateInfo ShaderCompiler::compile_shader_slang( cstring code, u32
         .targetCount = 1,
         .defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_COLUMN_MAJOR,
     };
+
+    // The bindless declarations in platform.slangh intentionally provide
+    // multiple typed views of the same Vulkan descriptor arrays. Slang emits
+    // this diagnostic again while linking, outside the source pragma scope.
+    slang::CompilerOptionEntry compiler_options[] = {
+        {
+            .name = slang::CompilerOptionName::DisableWarnings,
+            .value = {
+                .kind = slang::CompilerOptionValueKind::String,
+                .stringValue0 = "39001",
+            },
+        },
+    };
+    session_desc.compilerOptionEntries = compiler_options;
+    session_desc.compilerOptionEntryCount = ArraySize( compiler_options );
     // sessionDesc.allowGLSLSyntax    = true;
 
     // Search paths

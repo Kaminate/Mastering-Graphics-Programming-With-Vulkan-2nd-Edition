@@ -6,6 +6,7 @@
 #include "external/json.hpp"
 
 #include <stdio.h>
+#include <string.h>
 #include <fstream>
 
 namespace raptor {
@@ -189,7 +190,7 @@ static void load_file( AppSettings& settings, cstring path, cstring chapter, boo
     }
 }
 
-void AppSettings::load( cstring data_folder, cstring chapter ) {
+void AppSettings::load( cstring data_folder, cstring chapter, int& argc, char** argv ) {
 
     StaticString512 path;
     path.append( "%s/settings_default.json", data_folder );
@@ -198,6 +199,29 @@ void AppSettings::load( cstring data_folder, cstring chapter ) {
     path.clear();
     path.append( "%s/settings.json", data_folder );
     load_file( *this, path.c_str(), chapter, false );
+
+    // Command line options substitutes settings from file.
+    // Removes each option read from argv.
+    int kept = 1;
+    for ( int i = 1; i < argc; ++i ) {
+        if ( strcmp( argv[ i ], "--gpu-debug" ) == 0 && i + 1 < argc ) {
+            cstring value = argv[ ++i ];
+            bool found = false;
+            for ( u32 m = 0; m < VulkanDebugMode::Count && !found; ++m ) {
+                if ( strcmp( value, VulkanDebugMode::s_value_names[ m ] ) == 0 ) {
+                    gpu_debug = ( VulkanDebugMode::Enum )m;
+                    found = true;
+                }
+            }
+            rprint( found ? "settings: --gpu-debug %s\n" : "settings: --gpu-debug %s is not a debug mode (None, Default, Validation, GpuAssisted), ignored\n", value );
+            continue;
+        }
+
+        argv[ kept++ ] = argv[ i ];
+    }
+
+    argc = kept;
+    argv[ argc ] = nullptr;
 }
 
 } // namespace raptor

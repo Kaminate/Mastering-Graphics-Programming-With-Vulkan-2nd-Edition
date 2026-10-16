@@ -321,7 +321,9 @@ namespace raptor {
         u32                     index_buffer_offset;
 
         u32                     vertex_count;
-        u32                     _pad[ 3 ];
+        u32                     meshlet_vertex_offset;
+        u32                     joints_buffer_offset;
+        u32                     weights_buffer_offset;
 
     }; // struct GpuMaterialData
 

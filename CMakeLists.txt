@@ -18,7 +18,7 @@ include(RaptorChapters)
 find_package(Vulkan REQUIRED)
 
 if (UNIX)
-find_package(SDL2 REQUIRED)
+find_package(SDL3 REQUIRED)
 endif()
 
 # RaptorFoundation #######################################################
@@ -153,7 +153,7 @@ if (WIN32)
     )
 else()
     target_include_directories(RaptorApp PRIVATE
-        ${SDL2_INCLUDE_DIRS})
+        ${SDL3_INCLUDE_DIRS})
 endif()
 
 # RaptorExternal #########################################################
@@ -265,7 +265,9 @@ else()
     )
     target_include_directories(RaptorExternal PRIVATE
         ${Vulkan_INCLUDE_DIRS}
-        ${SDL2_INCLUDE_DIRS})
+        ${SDL3_INCLUDE_DIRS}
+        source/raptor
+        source)
 endif()
 
 target_compile_definitions(RaptorExternal PRIVATE VK_NO_PROTOTYPES)
@@ -279,6 +281,8 @@ add_library(RaptorGraphics STATIC
     source/raptor/graphics/asynchronous_loader.hpp
     source/raptor/graphics/command_buffer.cpp
     source/raptor/graphics/command_buffer.hpp
+    source/raptor/graphics/dds_reader.cpp
+    source/raptor/graphics/dds_reader.hpp
     source/raptor/graphics/fbx_model.cpp
     source/raptor/graphics/fbx_model.hpp
     source/raptor/graphics/frame_graph.cpp
@@ -354,7 +358,7 @@ else()
         binaries/assimp/linux/lib)
 
     target_include_directories(RaptorGraphics PRIVATE
-        ${SDL2_INCLUDE_DIRS})
+        ${SDL3_INCLUDE_DIRS})
 endif()
 
 if (WIN32)
@@ -368,11 +372,17 @@ if (WIN32)
         assimp-vc143-mt
         SDL3)
 else()
+    target_link_directories(RaptorGraphics PRIVATE
+        $ENV{VULKAN_SDK}/lib
+    )
+
     target_link_libraries(RaptorGraphics PRIVATE
         dl
         pthread
         assimp
-        SDL2::SDL2)
+        SDL3::SDL3
+        slang
+        slang-rt)
 endif()
 
 target_link_libraries(RaptorGraphics PRIVATE

@@ -147,7 +147,8 @@ struct ImageViewerRenderConfig {
     bool                    fullscreen      = false;
 
     // Draws controls and image, and tells the feature what to convert this frame.
-    void                    draw_imgui( GpuDevice& gpu, ImageViewerRenderingFeature& feature );
+    // Returns true when the selected image is explicitly cleared.
+    bool                    draw_imgui( GpuDevice& gpu, ImageViewerRenderingFeature& feature );
 
 }; // struct ImageViewerRenderConfig
 

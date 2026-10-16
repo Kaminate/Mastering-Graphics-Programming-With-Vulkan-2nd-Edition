@@ -131,7 +131,7 @@ float3 eval_disney_brdf_mollified(float3 albedo, float3 view_dir_local,
 
 // Shaders ///////////////////////////////////////////////////////////////
 #if defined(COMPUTE_COMPUTE_RANDOM_BATCH) || defined(COMPUTE_TRAIN_BRDF_WITH_ENCODER) || defined(COMPUTE_TRAIN_BRDF_WITH_LATENT_TEXTURE)
-ConstantBuffer<NMRandomBatchConstants> g_random_batch_constants : register(b0, space1);
+[[vk::binding(0, 1)]] ConstantBuffer<NMRandomBatchConstants> g_random_batch_constants : register(b0, space1);
 #endif
 
 #if defined(COMPUTE_COMPUTE_RANDOM_BATCH)
@@ -190,7 +190,7 @@ void main(uint3 dispatch_thread_id : SV_DispatchThreadID)
 #endif
 
 #if defined(COMPUTE_TRAIN_BRDF_WITH_ENCODER)
-ConstantBuffer<NMBrdfTrainingConstants> g_brdf_training_constants : register(b1, space1);
+[[vk::binding(1, 1)]] ConstantBuffer<NMBrdfTrainingConstants> g_brdf_training_constants : register(b1, space1);
 
 // float3 eval_reference_brdf(float3 n, float roughness, float2 uv)
 // {
@@ -278,7 +278,7 @@ void main(uint3 dispatch_thread_id : SV_DispatchThreadID) {
 #endif
 
 #if defined(COMPUTE_TRAIN_BRDF_WITH_LATENT_TEXTURE)
-ConstantBuffer<NMBrdfLatentTrainingConstants> g_brdf_latent_training_constants : register(b1, space1);
+[[vk::binding(1, 1)]] ConstantBuffer<NMBrdfLatentTrainingConstants> g_brdf_latent_training_constants : register(b1, space1);
 
 [Differentiable]
 float3 compute_grads_for_brdf_with_latent_texture(no_diff float input_values[11], no_diff float2 uv, no_diff float3 wi, no_diff float3 wo, no_diff uint lod, no_diff float3 target) {
@@ -361,7 +361,7 @@ void main(uint3 dispatch_thread_id : SV_DispatchThreadID) {
 #endif
 
 #if defined(COMPUTE_TRAIN_SAMPLER_WITH_ENCODER)
-ConstantBuffer<NMSamplerTrainingConstants> g_sampler_training_constants : register(b0, space1);
+[[vk::binding(0, 1)]] ConstantBuffer<NMSamplerTrainingConstants> g_sampler_training_constants : register(b0, space1);
 
 [numthreads(WORKGROUP_COUNT_X, 1, 1)]
 void main(uint3 dispatch_thread_id : SV_DispatchThreadID) {
@@ -388,7 +388,7 @@ void main(uint3 dispatch_thread_id : SV_DispatchThreadID) {
 #endif
 
 #if defined(COMPUTE_TRAIN_SAMPLER_WITH_LATENT_TEXTURE)
-ConstantBuffer<NMSamplerLatentTrainingConstants> g_sampler_latent_training_constants : register(b0, space1);
+[[vk::binding(0, 1)]] ConstantBuffer<NMSamplerLatentTrainingConstants> g_sampler_latent_training_constants : register(b0, space1);
 
 [numthreads(WORKGROUP_COUNT_X, 1, 1)]
 void main(uint3 dispatch_thread_id : SV_DispatchThreadID) {
@@ -413,7 +413,7 @@ void main(uint3 dispatch_thread_id : SV_DispatchThreadID) {
 #endif
 
 #if defined(COMPUTE_COPY_ENCODER_TO_LATENT_TEXTURE) || defined(COMPUTE_DOWNSAMPLE_LATENT_PYRAMID)
-ConstantBuffer<NMCopyEncoderToLatentConstants> g_copy_encoder_to_latent_constants : register(b0, space1);
+[[vk::binding(0, 1)]] ConstantBuffer<NMCopyEncoderToLatentConstants> g_copy_encoder_to_latent_constants : register(b0, space1);
 #endif
 
 #if defined(COMPUTE_COPY_ENCODER_TO_LATENT_TEXTURE)
@@ -505,7 +505,7 @@ void main(uint3 dispatch_thread_id: SV_DispatchThreadID)
 #endif
 
 #if defined(COMPUTE_OPTIMIZER_STEP_BUFFER)
-ConstantBuffer<NMOptimizerBufferConstants> g_optimizer_buffer_constants : register(b0, space1);
+[[vk::binding(0, 1)]] ConstantBuffer<NMOptimizerBufferConstants> g_optimizer_buffer_constants : register(b0, space1);
 
 [numthreads(WORKGROUP_COUNT_X, 1, 1)]
 void main(uint3 dispatch_thread_id : SV_DispatchThreadID) {
@@ -544,7 +544,7 @@ void main(uint3 dispatch_thread_id : SV_DispatchThreadID) {
 #endif
 
 #if defined(COMPUTE_OPTIMIZER_STEP_TEXTURE)
-ConstantBuffer<NMOptimizerTextureConstants> g_optimizer_texture_constants : register(b0, space1);
+[[vk::binding(0, 1)]] ConstantBuffer<NMOptimizerTextureConstants> g_optimizer_texture_constants : register(b0, space1);
 
 [numthreads(8, 8, 1)]
 void main(uint3 dispatch_thread_id : SV_DispatchThreadID) {

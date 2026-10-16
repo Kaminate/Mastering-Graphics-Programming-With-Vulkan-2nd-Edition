@@ -193,7 +193,7 @@ char* StringBuffer::append_use_substring( const char* string, u32 start_index, u
         RASSERT_OVERFLOW();
         rprint( "Buffer full! Please allocate more size.\n" );
         return nullptr;
-    }   
+    }
 
     u32 cached_offset = this->current_size;
 
@@ -281,7 +281,7 @@ void StringArray::shutdown() {
 
 void StringArray::clear() {
     current_size = 0;
-    
+
     string_to_index->clear();
 }
 
@@ -335,6 +335,19 @@ cstring StringArray::intern( cstring string ) {
     string_to_index->insert( hashed_string, string_index );
 
     return data + string_index;
+}
+
+void replace_with( char* string, cstring from, cstring to ) {
+
+    char* from_loc = strstr( string, from );
+
+    if ( from_loc == nullptr ) {
+        return;
+    }
+
+    RASSERT( strlen( from ) == strlen( to ) );
+
+    strncpy( from_loc, to, strlen( from ) );
 }
 
 } // namespace raptor

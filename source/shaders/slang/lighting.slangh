@@ -50,13 +50,13 @@ struct GpuLightingConstants {
     uint        pad003_lc;
 };
 
-StructuredBuffer<uint> z_bins           : register(t20, space1);
-StructuredBuffer<GpuLight> lights       : register(t21, space1);
-StructuredBuffer<uint> tiles            : register(t22, space1);
+[[vk::binding(20, 1)]] StructuredBuffer<uint> z_bins           : register(t20, space1);
+[[vk::binding(21, 1)]] StructuredBuffer<GpuLight> lights       : register(t21, space1);
+[[vk::binding(22, 1)]] StructuredBuffer<uint> tiles            : register(t22, space1);
 
-ConstantBuffer<GpuLightingConstants> light_consts : register(b23, space1);
+[[vk::binding(23, 1)]] ConstantBuffer<GpuLightingConstants> light_consts : register(b23, space1);
 
-StructuredBuffer<uint> light_indices    : register(t25, space1);
+[[vk::binding(25, 1)]] StructuredBuffer<uint> light_indices    : register(t25, space1);
 
 //#if RAYTRACED_SHADOWS
 //layout( set = MATERIAL_SET, binding = 26 ) uniform accelerationStructureEXT as;

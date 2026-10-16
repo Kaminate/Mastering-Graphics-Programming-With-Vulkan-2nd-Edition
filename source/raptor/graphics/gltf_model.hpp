@@ -24,6 +24,7 @@ namespace raptor {
         void                    fill_pbr_material( cgltf_data& gltf_scene, Renderer& renderer, u32 image_offset, u32 sampler_offset, cgltf_material& material, PBRMaterial& pbr_material );
 
         cgltf_data*             gltf_data; // Source gltf scene
+        Array<u32>              image_to_scene_texture;
 
     }; // struct GltfScene
 

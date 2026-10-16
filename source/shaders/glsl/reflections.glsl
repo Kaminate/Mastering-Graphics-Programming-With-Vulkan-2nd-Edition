@@ -187,7 +187,7 @@ void main() {
             // Debug: hit, no light selected
             //reflection_colour = vec3( 1, 0, 0 );
 
-            int_array_type index_buffer = int_array_type( mesh.index_buffer );
+            u16_array_type index_buffer = u16_array_type( mesh.index_buffer );
             int i0 = index_buffer[ payload.primitive_id * 3 ].v;
             int i1 = index_buffer[ payload.primitive_id * 3 + 1 ].v;
             int i2 = index_buffer[ payload.primitive_id * 3 + 2 ].v;
@@ -245,8 +245,6 @@ void main() {
             vec4 p1_screen = frame.view_projection * p1_world;
             vec4 p2_screen = frame.view_projection * p2_world;
 
-            ivec2 texture_size = textureSize( global_textures[ nonuniformEXT( mesh.textures.x ) ], 0 );
-
             // Raygen works at lower resolution, take in account for mip calculation
             vec2 screen_size = vec2( frame.resolution ) / max( 1.0, reflections_push.resolution_scale_rcp );
 
@@ -256,10 +254,20 @@ void main() {
             vec2 uv2 = uv_buffer[ i2 ].v;
 
             // TODO(marco): use ray differentials
-            float lod = compute_projected_triangle_lod( p0_world, p1_world, p2_world,
-                                                    uv0, uv1, uv2, texture_size, screen_size, frame.view_projection );
+            float lod = 0.0;
+            if ( mesh.textures.x != INVALID_TEXTURE_INDEX ) {
+                ivec2 texture_size = textureSize( global_textures[ nonuniformEXT( mesh.textures.x ) ], 0 );
+                lod = compute_projected_triangle_lod( p0_world, p1_world, p2_world,
+                                                      uv0, uv1, uv2, texture_size, screen_size, frame.view_projection );
+            }
 
             vec2 uv = ( a * uv0 + b * uv1 + c * uv2 );
+
+            vec4 albedo = mesh.base_color_factor;
+            if ( mesh.textures.x != INVALID_TEXTURE_INDEX ) {
+                vec4 texture_color = textureLod( global_textures[ nonuniformEXT( mesh.textures.x ) ], uv, lod );
+                albedo *= vec4( decode_srgb( texture_color.rgb ), texture_color.a );
+            }
 
             // Use precise barycentric based world coorindates
             vec3 p_world = a * p0_world.xyz + b * p1_world.xyz + c * p2_world.xyz;
@@ -326,8 +334,6 @@ void main() {
                     float roughness = frame.forced_roughness > 0.0 ? frame.forced_roughness : orm.g * orm.g;
                     float metallic = frame.forced_metalness > 0.0 ? frame.forced_metalness : orm.b;
 
-                    vec4 albedo = textureLod( global_textures[ nonuniformEXT( mesh.textures.x ) ], uv, lod );
-
                     vec3 light_intensity = NoL * light.intensity * attenuation * light.color;
 
                     float light_pdf = max( light_sample.importance, 0.000001f );
@@ -362,7 +368,6 @@ void main() {
 
                     if ( shadow_term > 0.0 ) {
                         uint packed_color = light_cb.raytraced_shadow_light_color_type & 0x00ffffffu;
-                        vec4 albedo = textureLod( global_textures[ nonuniformEXT( mesh.textures.x ) ], uv, lod );
                         vec3 light_intensity = NoL * light_cb.raytraced_shadow_light_intensity * shadow_term * unpack_color_rgba(light_cb.raytraced_shadow_light_color_type).rgb;
 
                         reflection_colour += albedo.rgb * light_intensity / PI;

@@ -20,7 +20,7 @@ static const uint DrawFlags_AlphaDither  = 1 << 9;
 //     vec2 v;
 // };
 
-// layout(buffer_reference, std430, buffer_reference_align = 2) buffer int_array_type {
+// layout(buffer_reference, std430, buffer_reference_align = 2) buffer u16_array_type {
 //     uint16_t v;
 // };
 
@@ -57,6 +57,11 @@ struct MeshDraw {
     uint        normal_buffer_offset;
     uint        uv0_buffer_offset;
     uint        index_buffer_offset;
+
+    uint        vertex_count;
+    uint        meshlet_vertex_offset;
+    uint        joints_buffer_offset;
+    uint        weights_buffer_offset;
 };
 
 struct MeshInstanceDraw {
@@ -123,6 +128,6 @@ uint3 Load3x16BitIndices(ByteAddressBuffer Indices, uint offsetBytes)
 }
 
 
-StructuredBuffer<MeshDraw>          mesh_draws          : register(t2, space1);
-StructuredBuffer<MeshInstanceDraw>  mesh_instance_draws : register(t10, space1);
-StructuredBuffer<float4>            mesh_bounds         : register(t12, space1);
+[[vk::binding(2, 1)]] StructuredBuffer<MeshDraw>          mesh_draws          : register(t2, space1);
+[[vk::binding(10, 1)]] StructuredBuffer<MeshInstanceDraw>  mesh_instance_draws : register(t10, space1);
+[[vk::binding(12, 1)]] StructuredBuffer<float4>            mesh_bounds         : register(t12, space1);

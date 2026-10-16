@@ -370,6 +370,8 @@ struct FrameGraph {
     CommandBuffer*                  get_command_buffer_from_batch( CommandQueueType queue, u32 phase );
 
     void                            debug_ui();
+    bool                            consume_debug_image_selection( ImageViewHandle& image_view );
+    void                            clear_debug_image_selection();
 
     [[deprecated("Use add_node_v2 instead")]]
     void                            add_node( FrameGraphNodeCreation& creation );
@@ -391,6 +393,8 @@ struct FrameGraph {
     Array<FrameGraphNodeHandle>     persistent_update_nodes;   // Cache of persistent nodes to flip current/previous handles
                                                                // and update outputs
 
+    Array<u32>                      node_layer;
+
     FrameGraphBuilder*              builder;
     Allocator*                      allocator;
 
@@ -400,6 +404,10 @@ struct FrameGraph {
     cstring                         name = nullptr;
 
     ax::NodeEditor::EditorContext*  ed_context = nullptr;
+
+    FrameGraphResourceHandle        debug_image_resource{ k_invalid_index };
+    ImageViewHandle                 debug_image_view;
+    bool                            debug_image_selection_pending = false;
 }; // struct FrameGraph
 
 } // namespace raptor

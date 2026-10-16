@@ -8,9 +8,11 @@
 #include "graphics/frame_renderer.hpp"
 #include "graphics/frame_graph.hpp"
 #include "graphics/asynchronous_loader.hpp"
+#include "graphics/dds_reader.hpp"
 
 #include "foundation/memory.hpp"
 #include "foundation/file.hpp"
+#include "foundation/numerics.hpp"
 
 #include "external/imgui/imgui.h"
 #include "external/vk_mem_alloc.h"
@@ -53,6 +55,11 @@ void Renderer::init( const RendererCreation& creation ) {
 
     const RendererResourcePoolCreation& pool_creation = creation.resource_pool_creation;
     textures.init( creation.allocator, pool_creation.textures );
+
+    views_waiting_upload.init( resident_allocator, gpu->images.size, gpu->images.size );
+    for ( u32 i = 0; i < views_waiting_upload.size; ++i ) {
+        views_waiting_upload[ i ] = ImageViewHandle{};
+    }
     buffers.init( creation.allocator, pool_creation.buffers );
     samplers.init( creation.allocator, pool_creation.samplers );
     shader_reflections.init( creation.allocator, pool_creation.shader_reflections );
@@ -91,6 +98,7 @@ void Renderer::shutdown() {
     resource_cache.shutdown( this );
     gpu_heap_budgets.shutdown();
 
+    views_waiting_upload.shutdown();
     textures.shutdown();
     buffers.shutdown();
     samplers.shutdown();
@@ -141,7 +149,8 @@ void Renderer::imgui_draw() {
 
 void Renderer::set_presentation_mode( PresentMode::Enum value ) {
     gpu->set_present_mode( value );
-    gpu->resize_swapchain();
+    // Recreate the swapchain after this frame's present.
+    gpu->resize( gpu->swapchain_width, gpu->swapchain_height );
 }
 
 f32 Renderer::aspect_ratio() const {
@@ -178,7 +187,7 @@ f32 Renderer::aspect_ratio() const {
 //    return buffer;
 //}
 
-TextureResource* Renderer::create_texture( const ImageCreation& creation ) {
+TextureResource* Renderer::create_texture( const ImageCreation& creation, bool add_to_bindless ) {
     TextureResource* texture = textures.obtain();
 
     if ( texture ) {
@@ -190,7 +199,9 @@ TextureResource* Renderer::create_texture( const ImageCreation& creation ) {
             .parent_image = image_handle, .view_type = VK_IMAGE_VIEW_TYPE_2D,
             .sub_resource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, creation.mip_level_count, 0, 1 }, .name = creation.name } );
 
-        gpu->add_image_view_to_bindless( texture->image_view );
+        if ( add_to_bindless ) {
+            gpu->add_image_view_to_bindless( texture->image_view );
+        }
 
         if ( creation.name != nullptr ) {
             resource_cache.textures.insert( hash_calculate( creation.name ), texture );
@@ -205,42 +216,84 @@ TextureResource* Renderer::create_texture( const ImageCreation& creation ) {
 
 TextureResource* Renderer::create_texture_from_file( cstring full_filename, bool generate_mips, bool srgb ) {
 
-    int comp, width, height;
+    int comp = 0, width = 0, height = 0;
+    u32 size = 0;
 
     cstring path = names_buffer.append_use_f( "%s", full_filename );
 
-    stbi_info( path, &width, &height, &comp );
-
+    bool dds = false;
     u32 mip_levels = 1;
-    if ( generate_mips ) {
-        u32 w = width;
-        u32 h = height;
+    ImageCreation tc{ };
+    if ( strstr( path, ".dds" ) != nullptr )  {
+        dds = true;
+        comp = 0; // unused
 
-        while ( w > 1 && h > 1 ) {
-            w /= 2;
-            h /= 2;
-
-            ++mip_levels;
+        VkFormat format = VK_FORMAT_UNDEFINED;
+        if ( !dds_info( path, width, height, mip_levels, size, format ) ) {
+            return nullptr;
         }
+
+        tc = {
+            .image_type      = VK_IMAGE_TYPE_2D,
+            .format          = format,
+            .width           = ( u32 )width,
+            .height          = ( u32 )height,
+            .depth           = 1,
+            .mip_level_count = mip_levels,
+            .usage           = VK_IMAGE_USAGE_SAMPLED_BIT |
+                               VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            .initial_data    = nullptr,
+            .generate_mips   = false,
+            .name            = path };
+    } else {
+        if ( !stbi_info( path, &width, &height, &comp ) ) {
+            rprint( "Failed to read image metadata: %s\n", path );
+            return nullptr;
+        }
+
+        if ( generate_mips ) {
+            u32 w = width;
+            u32 h = height;
+
+            while ( w > 1 || h > 1 ) {
+                w = raptor::max( 1u, w / 2 );
+                h = raptor::max( 1u, h / 2 );
+
+                ++mip_levels;
+            }
+        }
+
+        tc = {
+            .image_type      = VK_IMAGE_TYPE_2D,
+            .format          = VK_FORMAT_R8G8B8A8_UNORM,
+            .width           = ( u32 )width,
+            .height          = ( u32 )height,
+            .depth           = 1,
+            .mip_level_count = mip_levels,
+            .usage           = VK_IMAGE_USAGE_SAMPLED_BIT |
+                               VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            .initial_data    = nullptr,
+            .generate_mips   = generate_mips,
+            .name            = path };
+
+        size = width * height * 4;
     }
 
-
     // Create texture
-    ImageCreation tc{
-        .image_type      = VK_IMAGE_TYPE_2D,
-        .format          = VK_FORMAT_R8G8B8A8_UNORM,
-        .width           = ( u32 )width,
-        .height          = ( u32 )height,
-        .depth           = 1,
-        .mip_level_count = mip_levels,
-        .usage           = VK_IMAGE_USAGE_SAMPLED_BIT |
-                           VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                           VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-        .initial_data    = nullptr,
-        .name            = path };
-    TextureResource* tr = create_texture( tc );
+    TextureResource* tr = create_texture( tc, false );
+    if ( !tr ) {
+        return nullptr;
+    }
+    gpu->remove_image_view_from_bindless( tr->image_view );
+    {
+        std::lock_guard<std::mutex> guard( texture_update_mutex );
+        views_waiting_upload[ tr->image.index() ] = tr->image_view;
+    }
+
     // Request async loading
-    async_loader->request_texture_load_from_file( path, tr->image );
+    async_loader->request_texture_load_from_file( path, tr->image, width, height, comp, size, dds );
 
     return tr;
 }
@@ -286,7 +339,7 @@ static u32 compare_shader_reflections( const ShaderReflection& glsl, const Shade
     }
 
     if ( glsl.sets.size != slang.sets.size ) {
-        rprint( "[reference] %s/%s: %u descriptor set (glsl) vs %u (slang)\n", 
+        rprint( "[reference] %s/%s: %u descriptor set (glsl) vs %u (slang)\n",
                 technique_name, pipeline_name, glsl.sets.size, slang.sets.size );
         ++structural;
     }
@@ -483,7 +536,7 @@ bool Renderer::create_compute_pipeline_state( const ShaderCompilationCreation& s
 }
 
 bool Renderer::create_raytracing_pipeline_state( const ShaderCompilationCreation& shader_creation, const PipelineCreation& pipeline_creation, cstring name, FrameGraph* frame_graph, RayTracingPipelineState& out_pipeline_state ) {
-    
+
     out_pipeline_state.name = pipeline_creation.name;
 
     ShaderReflection shader_reflections[ ( u32 )ShaderLanguage::Count ];
@@ -573,7 +626,7 @@ ShaderStateHandle Renderer::create_shader_state( const ShaderCompilationCreation
         }
 
         shader_stage.pCode = spirv_bytecode.data;
-        shader_stage.codeSize = spirv_bytecode.size;
+        shader_stage.codeSize = spirv_bytecode.size * sizeof( u32 );
 
         ssc.add_stage( shader_stage, shader_compilation_stage.type );
     }
@@ -1053,6 +1106,11 @@ void Renderer::destroy_texture( TextureResource* texture ) {
         resource_cache.textures.remove( hash_calculate( vk_image->name ) );
     }
 
+    {
+        std::lock_guard<std::mutex> guard( texture_update_mutex );
+        views_waiting_upload[ texture->image.index() ] = ImageViewHandle{};
+    }
+
     gpu->destroy_image( texture->image );
     gpu->destroy_image_view( texture->image_view );
     gpu->remove_image_view_from_bindless( texture->image_view );
@@ -1293,32 +1351,37 @@ CommandBuffer* Renderer::add_image_finalize_commands( u32 thread_id ) {
 
         ImageHandle image_handle = images_to_update[ i ];
         Image* image = gpu->get_image( image_handle );
-        // Transfer queue -> main queue barrier
-        //util_add_image_barrier_ext( cb->gpu_device, cb->vk_command_buffer, texture->vk_image, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_COPY_SOURCE,/*
-        //                            0, 1, 0, 1, false, gpu->vulkan_transfer_queue_family, gpu->vulkan_main_queue_family, QueueType::CopyTransfer, QueueType::Graphics );*/
 
         // NOTE: asynchronous loader MUST release ownership from the transfer queue.
-        VkImageSubresourceRange range = range_aspect( VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 );
+        VkImageSubresourceRange range = range_aspect( VK_IMAGE_ASPECT_COLOR_BIT, 0, image->generate_mips ? 1 : image->mip_level_count, 0, 1 );
+        const ImageSyncState upload_state = image->generate_mips
+            ? ImageSyncState{ VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL }
+            : ImageSyncState{ VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                              VK_ACCESS_2_SHADER_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
         if ( gpu->vulkan_transfer_queue_family != gpu->vulkan_main_queue_family ) {
             cb->acquire_image_ownership( image_handle,
                                          range,
                                          gpu->vulkan_transfer_queue_family,
                                          gpu->vulkan_main_queue_family,
-                                         { VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                                           VK_ACCESS_2_TRANSFER_READ_BIT,
-                                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL } );
+                                         upload_state );
         }
         else {
-            cb->add_image_barrier( image_handle, range,
-                                   { VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                                     VK_ACCESS_2_TRANSFER_READ_BIT,
-                                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL } );
+            cb->add_image_barrier( image_handle, range, upload_state );
         }
 
         cb->flush_barriers();
-        generate_mipmaps( image_handle, cb,
-                          { VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                          VK_ACCESS_2_SHADER_READ_BIT, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL } );
+
+        if ( image->generate_mips ) {
+            generate_mipmaps( image_handle, cb,
+                              { VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                VK_ACCESS_2_SHADER_READ_BIT, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL } );
+        }
+
+        ImageViewHandle& waiting_view = views_waiting_upload[ image_handle.index() ];
+        if ( waiting_view.is_valid() ) {
+            gpu->add_image_view_to_bindless( waiting_view );
+            waiting_view = ImageViewHandle{};
+        }
     }
 
     cb->end();

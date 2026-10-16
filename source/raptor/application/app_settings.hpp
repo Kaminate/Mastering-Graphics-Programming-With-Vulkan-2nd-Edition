@@ -10,7 +10,7 @@ namespace raptor {
 
 struct AppSettings {
 
-    void            load( cstring data_folder, cstring chapter );
+    void            load( cstring data_folder, cstring chapter, int& argc, char** argv );
 
     // window
     u32             window_width            = 1280;
@@ -32,11 +32,11 @@ struct AppSettings {
     u32             gpu_buffer_pool         = 1024;
     bool            gpu_timestamps          = true;
 
-    VulkanDebugMode::Enum gpu_debug = VulkanDebugMode::Default;   // replaces gpu_validation
-    PresentMode::Enum gpu_present_mode = PresentMode::VSync;
+    VulkanDebugMode::Enum gpu_debug         = VulkanDebugMode::Default;   // replaces gpu_validation
+    PresentMode::Enum gpu_present_mode      = PresentMode::VSync;
 
-    bool            upscale_enabled = false;
-    f32             upscale_render_scale = 0.75f;
+    bool            upscale_enabled         = false;
+    f32             upscale_render_scale    = 0.75f;
 
     // memory
     u32             memory_max_dynamic_mb   = 2048;

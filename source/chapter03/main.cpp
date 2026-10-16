@@ -1109,7 +1109,7 @@ int main( int argc, char** argv ) {
     using namespace raptor;
 
     AppSettings settings;
-    settings.load( RAPTOR_DATA_FOLDER, RAPTOR_CHAPTER_NAME );
+    settings.load( RAPTOR_DATA_FOLDER, RAPTOR_CHAPTER_NAME, argc, argv );
 
     // Init services
     MemoryServiceConfiguration memory_configuration;
@@ -1354,10 +1354,8 @@ int main( int argc, char** argv ) {
         // New frame
         if ( !window.minimized ) {
             gpu.wait_for_previous_frame();
-            VkResult result = gpu.acquire_next_swapchain_image();
-            if ( result == VK_ERROR_OUT_OF_DATE_KHR ) {
-                gpu.resize_swapchain();
-            }
+            
+            gpu.acquire_next_swapchain_image();
             gpu.update_descriptors();
             gpu.reset_pools();
 
@@ -1516,7 +1514,7 @@ int main( int argc, char** argv ) {
             imgui->finalize_draw_data();
         }
 
-        if ( !window.minimized ) {
+        if ( !window.minimized && gpu.swapchain_image_acquired ) {
             DrawTask draw_task;
             draw_task.init( renderer.gpu, &frame_graph, &renderer, imgui, &gpu_profiler, &render_scene, &frame_renderer );
             task_scheduler.AddTaskSetToPipe( &draw_task );
@@ -1532,13 +1530,13 @@ int main( int argc, char** argv ) {
             // Collect all command buffers for submission
             StaticArray<CommandBuffer*, 6> cbs;
 
-            cbs.push( frame_graph.get_command_buffer_from_batch( CommandQueueType::Graphics, 0 ) );
-            cbs.push( draw_task.gfx_cb );
-
-            // Add image upload commands if any
+            // Texture uploads first: their mips and layout must be ready before any pass samples them.
             if ( image_upload_cb ) {
                 cbs.push( image_upload_cb );
             }
+            cbs.push( frame_graph.get_command_buffer_from_batch( CommandQueueType::Graphics, 0 ) );
+            cbs.push( draw_task.gfx_cb );
+
 
             GpuSubmitSync present_sync = gpu.build_present_sync( VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                                                                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT );
@@ -1548,7 +1546,6 @@ int main( int argc, char** argv ) {
                               present_sync.signals.as_span() );
 
             gpu.present();
-            gpu.resolve_timestamps();
             gpu.process_pending_resource_deletion();
         } else {
             ImGui::Render();

@@ -20,6 +20,8 @@
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 
+#include <cfloat>
+
 static const bool k_enable_physics = false;
 
 namespace raptor {

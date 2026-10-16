@@ -101,7 +101,7 @@ static const char* g_fragment_shader_code_bindless = {
 
 // Slang shaders honor the 0 based instance index, thus we need to pass the instance ID as a push constant
 static const char* g_vertex_shader_code_bindless_slang = {
-    "cbuffer material_buffer : register(b0, space1) { float4x4 ProjectionMatrix; };\n"
+    "[[vk::binding(0, 1)]] cbuffer material_buffer : register(b0, space1) { float4x4 ProjectionMatrix; };\n"
     "struct VSInput {\n"
     "\n"
     "[[vk::location(0)]] float2 Position : POSITION;\n"
@@ -134,8 +134,8 @@ static const char* g_fragment_shader_code_bindless_slang = {
     "struct PSOutput {\n"
     "[[vk::location(0)]] float4 Color : SV_TARGET0; };\n"
     "\n"
-    "Texture2D<float4> global_textures[] : register(t10, space0);\n"
-    "SamplerState global_samplers[] : register(s12, space0);\n"
+    "[[vk::binding(10, 0)]] Texture2D<float4> global_textures[] : register(t10, space0);\n"
+    "[[vk::binding(12, 0)]] SamplerState global_samplers[] : register(s12, space0);\n"
     "[shader(\"fragment\")]\n"
     "PSOutput main(PSInput input) {\n"
     "PSOutput output;\n"
@@ -166,6 +166,9 @@ void ImGuiService::init( void* configuration ) {
 
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
+    // Let game controls use the keyboard while an ImGui window has navigation focus.
+    // Active widgets (such as text fields) still set WantCaptureKeyboard.
+    io.ConfigNavCaptureKeyboard = false;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;       // Enable Multi-Viewport / Platform Windows
@@ -269,11 +272,11 @@ void ImGuiService::init( void* configuration ) {
     // Create pipeline
     ShaderStateCreation shader_creation;
     VkShaderModuleCreateInfo vs_info = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
-    vs_info.codeSize = vs.size;
+    vs_info.codeSize = vs.size * sizeof( u32 );
     vs_info.pCode = vs.data;
 
     VkShaderModuleCreateInfo ps_info = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
-    ps_info.codeSize = ps.size;
+    ps_info.codeSize = ps.size * sizeof( u32 );
     ps_info.pCode = ps.data;
 
     shader_creation.add_stage( vs_info, VK_SHADER_STAGE_VERTEX_BIT )
@@ -284,7 +287,7 @@ void ImGuiService::init( void* configuration ) {
     pipeline_creation.shader = shader;
     pipeline_creation.name = "Pipeline_ImGui";
 
-    pipeline_creation.blend_state.blend_states = {
+    pipeline_creation.blend_state.blend_states = Span<const BlendState>{
         {
             .source_color = VK_BLEND_FACTOR_SRC_ALPHA,
             .destination_color = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,

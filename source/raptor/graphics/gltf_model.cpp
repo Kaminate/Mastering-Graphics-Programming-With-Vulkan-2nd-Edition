@@ -10,6 +10,7 @@
 
 #include "external/imgui/imgui.h"
 #include "external/stb_image.h"
+#include "external/json.hpp"
 
 #include "external/glm/matrix.hpp"
 #include "external/glm/mat4x4.hpp"
@@ -61,10 +62,23 @@ void glTFModel::fill_pbr_material( cgltf_data& gltf_scene, Renderer& renderer, u
         pbr_material.roughness_texture_index = get_material_texture( gpu, gltf_scene, image_offset, sampler_offset, material.pbr_metallic_roughness.metallic_roughness_texture );
     }
 
+    if ( material.has_pbr_specular_glossiness ) {
+        pbr_material.base_color_factor = glm::vec4( material.pbr_specular_glossiness.diffuse_factor[0],
+                                                    material.pbr_specular_glossiness.diffuse_factor[1],
+                                                    material.pbr_specular_glossiness.diffuse_factor[2],
+                                                    material.pbr_specular_glossiness.diffuse_factor[3] );
+
+        pbr_material.diffuse_texture_index =  get_material_texture( gpu, gltf_scene, image_offset, sampler_offset, material.pbr_specular_glossiness.diffuse_texture );
+
+        pbr_material.roughness = 1.0f - material.pbr_specular_glossiness.glossiness_factor;
+
+        // TODO(marco): use specular texture
+    }
+
     if ( material.emissive_texture.texture != nullptr ) {
         pbr_material.emissive_texture_index = get_material_texture( gpu, gltf_scene, image_offset, sampler_offset, material.emissive_texture );
     } else {
-        pbr_material.emissive_texture_index = -1;
+        pbr_material.emissive_texture_index = k_invalid_scene_texture_index;
     }
 
     pbr_material.emissive_factor = glm::vec3( material.emissive_factor[0], material.emissive_factor[1], material.emissive_factor[2] );
@@ -72,13 +86,13 @@ void glTFModel::fill_pbr_material( cgltf_data& gltf_scene, Renderer& renderer, u
     if ( material.occlusion_texture.texture != nullptr ) {
         pbr_material.occlusion_texture_index = get_material_texture( gpu, gltf_scene, image_offset, sampler_offset, material.occlusion_texture );
     } else {
-        pbr_material.occlusion_texture_index = -1;
+        pbr_material.occlusion_texture_index = k_invalid_scene_texture_index;
     }
 
     if ( material.normal_texture.texture ) {
         pbr_material.normal_texture_index = get_material_texture( gpu, gltf_scene, image_offset, sampler_offset, material.normal_texture );
     } else {
-        pbr_material.normal_texture_index = -1;
+        pbr_material.normal_texture_index = k_invalid_scene_texture_index;
     }
 
     if ( material.occlusion_texture.texture != nullptr ) {
@@ -90,12 +104,21 @@ u16 glTFModel::get_material_texture( GpuDevice& gpu, cgltf_data& gltf_scene, u32
 
     if ( texture_info.texture != nullptr ) {
         cgltf_texture* gltf_texture = texture_info.texture;
-        TextureResource& texture_gpu = render_scene->images[ ( u32 )cgltf_image_index( &gltf_scene, gltf_texture->image ) + image_offset ];
+        if ( !gltf_texture->image ) {
+            return k_invalid_scene_texture_index;
+        }
+        const u32 texture_index = image_to_scene_texture[ ( u32 )cgltf_image_index( &gltf_scene, gltf_texture->image ) ];
+        if ( texture_index == u32_max ) {
+            return k_invalid_scene_texture_index;
+        }
+        TextureResource& texture_gpu = render_scene->images[ texture_index + image_offset ];
 
         if ( gltf_texture->sampler != nullptr ) {
             SamplerResource& sampler_gpu = render_scene->samplers[ ( u32 )cgltf_sampler_index( &gltf_scene, gltf_texture->sampler ) + sampler_offset ];
 
             gpu.link_image_sampler( texture_gpu.image, sampler_gpu.handle );
+        } else {
+            gpu.link_image_sampler( texture_gpu.image, gpu.global_samplers[ GlobalSamplers::LinearRepeat ] );
         }
 
         return texture_gpu.image_view.index();
@@ -136,15 +159,55 @@ void glTFModel::load_model( cstring filename, cstring path, ArenaAllocator* temp
     u32 image_offset = render_scene->images.size;
     u32 sampler_offset = render_scene->samplers.size;
 
+    // cgltf preserves MSFT_texture_dds as an unknown extension. Prefer its explicit image source.
+    for ( u32 texture_index = 0; texture_index < gltf_data->textures_count; ++texture_index ) {
+        cgltf_texture& texture = gltf_data->textures[ texture_index ];
+        for ( u32 extension_index = 0; extension_index < texture.extensions_count; ++extension_index ) {
+            const cgltf_extension& extension = texture.extensions[ extension_index ];
+            if ( strcmp( extension.name, "MSFT_texture_dds" ) != 0 ) {
+                continue;
+            }
+            const auto dds = nlohmann::json::parse( extension.data, nullptr, false );
+            if ( !dds.is_object() || !dds.contains( "source" ) || !dds[ "source" ].is_number_unsigned() ) {
+                continue;
+            }
+            const u64 source = dds[ "source" ].get<u64>();
+            if ( source < gltf_data->images_count ) {
+                texture.image = &gltf_data->images[ source ];
+            }
+        }
+    }
+
+    image_to_scene_texture.init( resident_allocator, ( u32 )gltf_data->images_count, ( u32 )gltf_data->images_count );
+    for ( u32 i = 0; i < image_to_scene_texture.size; ++i ) {
+        image_to_scene_texture[ i ] = u32_max;
+    }
+
     for ( u32 image_index = 0; image_index < gltf_data->images_count; ++image_index ) {
         cgltf_image& image = gltf_data->images[ image_index ];
 
+        bool referenced = false;
+        for ( u32 texture_index = 0; texture_index < gltf_data->textures_count; ++texture_index ) {
+            referenced |= gltf_data->textures[ texture_index ].image == &image;
+        }
+        if ( !referenced || !image.uri ) {
+            continue;
+        }
+
         // Reconstruct file path
+        temp_name_buffer.clear();
         char* full_filename = temp_name_buffer.append_use_f( "%s%s", path, image.uri );
+        if ( !file_exists( full_filename ) ) {
+            continue;
+        }
 
         TextureResource* tr = renderer->create_texture_from_file( full_filename, true, false );
-        RASSERT( tr != nullptr );
+        if ( !tr ) {
+            rprint( "Failed to load glTF image: %s\n", full_filename );
+            continue;
+        }
 
+        image_to_scene_texture[ image_index ] = render_scene->images.size - image_offset;
         render_scene->images.push( *tr );
         // Reset name buffer
         temp_name_buffer.clear();
@@ -248,7 +311,7 @@ void glTFModel::load_model( cstring filename, cstring path, ArenaAllocator* temp
 
     // Mesh data is stored as primitive in GLTF lingo. Primitives can be seen as submeshes, to use
     // a more common term. Each primitive/submesh has its own material and can be rendered independently.
-    // Cache mesh offset to differentiate 
+    // Cache mesh offset to differentiate
     Array<u32> gltf_mesh_to_submesh_offset;
     gltf_mesh_to_submesh_offset.init( temp_allocator, ( u32 )gltf_data->meshes_count );
 
@@ -705,6 +768,7 @@ void glTFModel::shutdown( Renderer* renderer ) {
     // NOTE(marco): we can't destroy this sooner as textures and buffers
     // hold a pointer to the names stored here
     cgltf_free( gltf_data );
+    image_to_scene_texture.shutdown();
 }
 
 } // namespace raptor

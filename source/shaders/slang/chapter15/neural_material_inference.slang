@@ -9,7 +9,7 @@
 #include "neural_material_brdf.slangh"
 
 #if defined(COMPUTE_PREVIEW_BRDF)
-ConstantBuffer<NMPreviewConstants> g_preview_constants : register(b0, space1);
+[[vk::binding(0, 1)]] ConstantBuffer<NMPreviewConstants> g_preview_constants : register(b0, space1);
 
 [numthreads(8, 8, 1)]
 void main(uint3 dispatch_thread_id : SV_DispatchThreadID)

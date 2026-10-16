@@ -32,9 +32,9 @@ layout(set = MATERIAL_SET, binding = 9) buffer OutMeshletVertexBuffer
     VertexPosition meshlet_vertex_buffer[];
 };
 
-layout(set = MATERIAL_SET, binding = 11) readonly buffer InMeshletDataBuffer
+layout(std430, set = MATERIAL_SET, binding = 11) readonly buffer NormalBuffer
 {
-    VertexExtraData meshlet_vertex_data[];
+    float mesh_normal_buffer[];
 };
 
 layout( push_constant ) uniform PushConstants
@@ -93,13 +93,17 @@ void main() {
         return;
     }
 
-    uint global_vertex_index = ( mesh_draw.position_buffer_offset / 12 ) + vertex_index;
+    uint position_vertex_index = ( mesh_draw.position_buffer_offset / 12 ) + vertex_index;
+    uint normal_vertex_index = ( mesh_draw.normal_buffer_offset / 12 ) + vertex_index;
+    uint joint_vertex_index = ( mesh_draw.joints_buffer_offset / 8 ) + vertex_index;
+    uint weight_vertex_index = ( mesh_draw.weights_buffer_offset / 16 ) + vertex_index;
+    uint meshlet_vertex_index = mesh_draw.meshlet_vertex_offset + vertex_index;
 
-    vec3 vertex_position = vec3( mesh_vertex_buffer[ global_vertex_index * 3 + 0 ],
-                                 mesh_vertex_buffer[ global_vertex_index * 3 + 1 ],
-                                 mesh_vertex_buffer[ global_vertex_index * 3 + 2 ] );
-    u16vec4 joint_indices = joint_index_buffer[ global_vertex_index ];
-    vec4 joint_weights = joint_weight_buffer[ global_vertex_index ];
+    vec3 vertex_position = vec3( mesh_vertex_buffer[ position_vertex_index * 3 + 0 ],
+                                 mesh_vertex_buffer[ position_vertex_index * 3 + 1 ],
+                                 mesh_vertex_buffer[ position_vertex_index * 3 + 2 ] );
+    u16vec4 joint_indices = joint_index_buffer[ joint_vertex_index ];
+    vec4 joint_weights = joint_weight_buffer[ weight_vertex_index ];
 
     mat4 skinning_transform =
         joint_weights.x * joint_matrices[(joint_indices.x)] +
@@ -109,19 +113,18 @@ void main() {
 
     vec4 animated_position = skinning_transform * vec4( vertex_position, 1.0 );
 
-    float i8_inverse = 1.0 / 127.0;
-    vec3 normal_os = vec3( int( meshlet_vertex_data[ global_vertex_index ].nx),
-                           int( meshlet_vertex_data[ global_vertex_index ].ny),
-                           int( meshlet_vertex_data[ global_vertex_index ].nz) ) * i8_inverse - 1.0;
+    vec3 normal_os = vec3( mesh_normal_buffer[ normal_vertex_index * 3 + 0 ],
+                           mesh_normal_buffer[ normal_vertex_index * 3 + 1 ],
+                           mesh_normal_buffer[ normal_vertex_index * 3 + 2 ] );
 
     vec4 animated_normal = skinning_transform * vec4( normal_os, 0.0 );
     animated_normal.xyz = normalize( animated_normal.xyz );
 
-    meshlet_vertex_buffer[ global_vertex_index ].v = animated_position.xyz;
+    meshlet_vertex_buffer[ meshlet_vertex_index ].v = animated_position.xyz;
 
-    vertex_data[ global_vertex_index ].nx = uint8_t( ( animated_normal.x + 1.0 ) * 127.0 );
-    vertex_data[ global_vertex_index ].ny = uint8_t( ( animated_normal.y + 1.0 ) * 127.0 );
-    vertex_data[ global_vertex_index ].nz = uint8_t( ( animated_normal.z + 1.0 ) * 127.0 );
+    vertex_data[ meshlet_vertex_index ].nx = uint8_t( ( animated_normal.x + 1.0 ) * 127.0 );
+    vertex_data[ meshlet_vertex_index ].ny = uint8_t( ( animated_normal.y + 1.0 ) * 127.0 );
+    vertex_data[ meshlet_vertex_index ].nz = uint8_t( ( animated_normal.z + 1.0 ) * 127.0 );
 }
 
 #endif // COMPUTE_ANIMATED_MESHLET_VERTEX_UPDATE

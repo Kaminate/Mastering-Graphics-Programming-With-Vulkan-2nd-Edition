@@ -3187,7 +3187,7 @@ int main( int argc, char** argv ) {
     using namespace raptor;
 
     AppSettings settings;
-    settings.load( RAPTOR_DATA_FOLDER, RAPTOR_CHAPTER_NAME );
+    settings.load( RAPTOR_DATA_FOLDER, RAPTOR_CHAPTER_NAME, argc, argv );
 
     time_service_init();
 
@@ -3257,10 +3257,8 @@ int main( int argc, char** argv ) {
         if ( !window.minimized ) {
             gpu.wait_for_previous_frame();
             VkResult result = gpu.acquire_next_swapchain_image();
-            if ( result == VK_ERROR_OUT_OF_DATE_KHR ) {
-                gpu.resize_swapchain();
-            }
-            else if ( result == VK_ERROR_DEVICE_LOST ) {
+            
+            if ( result == VK_ERROR_DEVICE_LOST ) {
                 gpu.dump_device_fault();
                 break;
             }
@@ -3314,7 +3312,7 @@ int main( int argc, char** argv ) {
 
         imgui->finalize_draw_data();
 
-        if ( !window.minimized ) {
+        if ( !window.minimized && gpu.swapchain_image_acquired ) {
             CommandBuffer* cb = gpu.allocate_command_buffer( 0, gpu.current_frame, CommandQueueType::Graphics );
             cb->begin();
             gpu.gpu_profiler->begin_command_buffer( cb );
@@ -3355,7 +3353,6 @@ int main( int argc, char** argv ) {
                                                          VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT );
             gpu.queue_submit( CommandQueueType::Graphics, cbs.as_span(), sync.waits.as_span(), sync.signals.as_span() );
             gpu.present();
-            gpu.resolve_timestamps();
             gpu.process_pending_resource_deletion();
             gpu_profiler.update( gpu );
         } else {

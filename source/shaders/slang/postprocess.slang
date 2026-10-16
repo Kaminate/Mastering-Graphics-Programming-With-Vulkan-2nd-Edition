@@ -33,7 +33,7 @@ struct FragmentInput {
 };
 
 //layout ( std140, set = MATERIAL_SET, binding = 11 ) uniform PostConstants {
-ConstantBuffer<GpuPostProcessConstants> post : register(b11, space1);
+[[vk::binding(11, 1)]] ConstantBuffer<GpuPostProcessConstants> post : register(b11, space1);
 
 
 // All filters taken from https://www.shadertoy.com/view/WdjSW3

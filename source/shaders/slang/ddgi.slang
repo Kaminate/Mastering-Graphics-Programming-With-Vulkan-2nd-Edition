@@ -9,7 +9,7 @@ struct RayPayload {
 
 
 //layout( set = MATERIAL_SET, binding = 26 ) uniform accelerationStructureEXT as;
-RaytracingAccelerationStructure as : register(t26, space1);
+[[vk::binding(26, 1)]] RaytracingAccelerationStructure as : register(t26, space1);
 
 // TODO: put this in a common header.
 struct Light {
@@ -25,8 +25,8 @@ struct Light {
     float           padding_l_002;
 };
 
-StructuredBuffer<Light> lights : register(t21, space1);
-StructuredBuffer<uint> probe_status : register(t43, space1);
+[[vk::binding(21, 1)]] StructuredBuffer<Light> lights : register(t21, space1);
+[[vk::binding(43, 1)]] StructuredBuffer<uint> probe_status : register(t43, space1);
 
 #endif // #if defined (RAYGEN_PROBE_RT_SLANG) || defined (CLOSEST_HIT_PROBE_RT_SLANG) || defined (MISS_PROBE_RT_SLANG)
 

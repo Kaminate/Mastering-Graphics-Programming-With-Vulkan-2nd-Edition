@@ -648,7 +648,7 @@ void main() {
     normal = apply_pixel_normal( mesh_draw.textures.z, vTexcoord0_W.xy, normal, tangent, bitangent );
 
     vec3 orm = calculate_pbr_parameters( mesh_draw.metallic_roughness_occlusion_factor.x, mesh_draw.metallic_roughness_occlusion_factor.y,
-                                                                      mesh_draw.textures.y, mesh_draw.metallic_roughness_occlusion_factor.z, mesh_draw.textures.w, vTexcoord0_W.xy );
+                                         mesh_draw.textures.y, mesh_draw.metallic_roughness_occlusion_factor.z, mesh_draw.textures.w, vTexcoord0_W.xy );
     orm = resolve_orm( orm, normal );
     vec3 emissive_colour = calculate_emissive(mesh_draw.emissive.rgb, uint(mesh_draw.emissive.w), vTexcoord0_W.xy );
 
@@ -664,8 +664,7 @@ void main() {
     vec4 final_color = calculate_lighting( base_colour, orm, normal, emissive_colour.rgb, world_position, position, screen_uv, true );
 
     final_color.rgb = apply_volumetric_fog( screen_uv, gl_FragCoord.z, final_color.rgb );
-    final_color.rgb = encode_srgb( final_color.rgb );
-
+    
     color_out = final_color;
 #endif
 

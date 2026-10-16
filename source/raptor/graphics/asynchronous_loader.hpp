@@ -26,6 +26,12 @@ namespace raptor
         StringPath              path;
         ImageHandle             texture = {};
         BufferHandle            buffer  = {};
+
+        u32                     size;
+        int                     width;
+        int                     height;
+        int                     comp;
+        bool                    dds;
     }; // struct FileLoadRequest
 
     enum class UploadRequestType : u8 {
@@ -48,6 +54,7 @@ namespace raptor
         u32                     size;         // size of data when copying from raw CPU memory
         u32                     offset;
         bool                    keep_src;     // if true, don't destroy the src buffer after upload
+        bool                    dds_format;
 
     }; // struct UploadRequest
 
@@ -66,7 +73,7 @@ namespace raptor
         void                    update();
         void                    shutdown();
 
-        void                    request_texture_load_from_file( cstring filename, ImageHandle texture );
+        void                    request_texture_load_from_file( cstring filename, ImageHandle texture, int width, int height, int comp, u32 size, bool dds );
         void                    request_buffer_copy( BufferHandle src, BufferHandle dst, bool keep_src = false );
         void                    request_buffer_upload( BufferHandle destination, const void* data, VkDeviceSize size, VkDeviceSize offset = 0 );
 

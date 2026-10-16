@@ -84,18 +84,21 @@ function(raptor_link_chapter_deps target_name)
 
   else()
     target_include_directories(${target_name} PRIVATE
-      ${SDL2_INCLUDE_DIRS}
+      ${SDL3_INCLUDE_DIRS}
     )
 
     target_link_directories(${target_name} PRIVATE
       ${CMAKE_SOURCE_DIR}/binaries/assimp/linux/lib
+      $ENV{VULKAN_SDK}/lib
     )
 
     target_link_libraries(${target_name} PRIVATE
       dl
       pthread
       assimp
-      SDL2::SDL2
+      SDL3::SDL3
+      slang
+      slang-rt
     )
   endif()
 endfunction()

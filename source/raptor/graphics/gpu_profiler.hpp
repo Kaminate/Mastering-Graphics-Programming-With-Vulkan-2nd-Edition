@@ -105,6 +105,9 @@ struct GpuProfiler {
 
     Allocator*                      allocator                   = nullptr;
     Array<GPUTimeQuery>             timestamps;
+    
+    Array<GPUTimeQuery>             resolved_timestamps;
+    u32                             resolved_timestamps_count   = 0;
 
     GpuPipelineStatistics           frame_pipeline_statistics;  // Per frame statistics as sum of per-frame ones.
 

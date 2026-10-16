@@ -65,7 +65,7 @@ void main()
         vec2 screen_size = vec2(frame.resolution.x, frame.resolution.y);
         ivec2 texture_size = textureSize( global_textures[ nonuniformEXT( mesh.textures.x ) ], 0 );
 
-        int_array_type index_buffer = int_array_type( mesh.index_buffer );
+        u16_array_type index_buffer = u16_array_type( mesh.index_buffer );
         int i0 = index_buffer[ payload.primitive_id * 3 ].v;
         int i1 = index_buffer[ payload.primitive_id * 3 + 1 ].v;
         int i2 = index_buffer[ payload.primitive_id * 3 + 2 ].v;

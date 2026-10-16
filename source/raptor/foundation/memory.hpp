@@ -11,7 +11,7 @@ namespace raptor {
     #define rmega(size)             (size * 1024 * 1024)
     #define rgiga(size)             (size * 1024 * 1024 * 1024)
 
-    static const sizet              k_thread_allocator_default_size = rkilo( 128 );
+    static const sizet              k_thread_allocator_default_size = rmega( 1 );
 
     // Memory Methods /////////////////////////////////////////////////////
     void            memory_copy( void* destination, void* source, sizet size );

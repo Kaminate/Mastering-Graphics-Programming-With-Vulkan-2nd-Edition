@@ -56,6 +56,8 @@ namespace raptor {
     sizet                           file_read( void* memory, u32 element_size, u32 count, FileHandle file );
     bool                            file_delete( cstring path );
     bool                            file_copy( cstring existing_file, cstring new_file );
+    sizet                           file_size( FileHandle file );
+    sizet                           file_tell( FileHandle file );
 
 #if defined(_WIN64)
     FileTime                        file_last_write_time( cstring filename );

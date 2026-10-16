@@ -1,6 +1,6 @@
 #pragma once
 
-ConstantBuffer<GpuDDGIConstants> ddgi : register(b55, space1);
+[[vk::binding(55, 1)]] ConstantBuffer<GpuDDGIConstants> ddgi : register(b55, space1);
 
 // Debug options /////////////////////////////////////////////////////////
 bool show_border_vs_inside() {

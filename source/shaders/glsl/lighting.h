@@ -291,8 +291,10 @@ vec3 calculate_point_light_contribution(vec4 albedo, float roughness, vec3 norma
                 //                                 vec4(light_to_position, float(shadow_light_index)), light.shadow_mip_level ).r;
                 //shadow = reference_depth - bias < stored_depth ? 1.0 : 0.0;
 
-                shadow = textureLod( global_textures_cubemaps_array_shadow[ nonuniformEXT( light_cb.cubemap_shadows_index ) ],
-                                     vec4( light_to_position, float( shadow_light_index ) ), reference_depth - bias, light.shadow_mip_level );
+                if ( light_cb.cubemap_shadows_index != INVALID_TEXTURE_INDEX ) {
+                    shadow = textureLod( global_textures_cubemaps_array_shadow[ light_cb.cubemap_shadows_index ],
+                                         vec4( light_to_position, float( shadow_light_index ) ), reference_depth - bias, light.shadow_mip_level );
+                }
 
             } else {
 
@@ -327,8 +329,10 @@ vec3 calculate_point_light_contribution(vec4 albedo, float roughness, vec3 norma
                     //                                 vec4(sample_position, float(shadow_light_index)), light.shadow_mip_level ).r;
 
                     //shadow += reference_depth - bias < stored_depth ? 1.0 : 0.0;
-                    shadow += textureLod( global_textures_cubemaps_array_shadow[ nonuniformEXT( light_cb.cubemap_shadows_index ) ],
-                                          vec4( sample_position, float( shadow_light_index ) ), reference_depth - bias, light.shadow_mip_level );
+                    if ( light_cb.cubemap_shadows_index != INVALID_TEXTURE_INDEX ) {
+                        shadow += textureLod( global_textures_cubemaps_array_shadow[ light_cb.cubemap_shadows_index ],
+                                              vec4( sample_position, float( shadow_light_index ) ), reference_depth - bias, light.shadow_mip_level );
+                    }
                 }
 
                 shadow /= float(samples);

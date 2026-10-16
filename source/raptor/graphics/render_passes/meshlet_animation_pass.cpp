@@ -206,7 +206,7 @@ void MeshletAnimationPass::create_gpu_resources( FrameGraphResourceContext& cont
             descriptors.ssbos.push( { geometry_data.weights_buffer_gpu, 8 } );
             descriptors.ssbos.push( { meshlets_data.meshlets_vertex_pos_sb_gpu[ i ], 9 } );
             descriptors.ssbos.push( { skin.joint_transforms[ i ], 10 } );
-            descriptors.ssbos.push( { meshlets_data.meshlets_vertex_data_sb_gpu[ i ], 11});
+            descriptors.ssbos.push( { geometry_data.normal_buffer_gpu, 11 } );
             descriptors.ssbos.push( { gpu_culling.meshlet_indirect_early_count_sb[ i ], 15 } );
 
             vertex_update_descriptor_set[ i ][ s ] = renderer->create_descriptor_set( descriptors, shader_reflection,

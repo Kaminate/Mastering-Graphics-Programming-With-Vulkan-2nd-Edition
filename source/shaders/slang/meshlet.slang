@@ -24,11 +24,11 @@ struct VertexOutput {
 #endif
 };
 
-StructuredBuffer<Meshlet> meshlets              : register(t1, space1);
-StructuredBuffer<uint> meshletData              : register(t3, space1);
-StructuredBuffer<VertexPosition> vertex_positions : register(t4, space1);
-StructuredBuffer<VertexExtraData> vertex_data   : register(t5, space1);
-StructuredBuffer<MeshDrawCommand> draw_commands : register(t6, space1);
+[[vk::binding(1, 1)]] StructuredBuffer<Meshlet> meshlets              : register(t1, space1);
+[[vk::binding(3, 1)]] StructuredBuffer<uint> meshletData              : register(t3, space1);
+[[vk::binding(4, 1)]] StructuredBuffer<VertexPosition> vertex_positions : register(t4, space1);
+[[vk::binding(5, 1)]] StructuredBuffer<VertexExtraData> vertex_data   : register(t5, space1);
+[[vk::binding(6, 1)]] StructuredBuffer<MeshDrawCommand> draw_commands : register(t6, space1);
 
 uint hash(uint a)
 {

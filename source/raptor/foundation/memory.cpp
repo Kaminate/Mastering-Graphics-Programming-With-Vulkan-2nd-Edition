@@ -75,7 +75,7 @@ void MemoryService::init( void* configuration ) {
 #if defined(_WIN32)
     s_tls_context.tls_index = TlsAlloc();
 #else
-    s_tls_context.pthread_key_create( &s_tls_context.tls_key, nullptr );
+    pthread_key_create( &s_tls_context.tls_key, nullptr );
     s_tls_context.tls_created = true;
 #endif // WIN32
 }
@@ -108,7 +108,7 @@ void MemoryService::set_thread_temp_allocator( ArenaAllocator* allocator ) {
 
 // Get per thread allocator
 ArenaAllocator* MemoryService::get_thread_allocator() {
-    
+
 #if defined(_WIN32)
     ArenaAllocator* allocator = (ArenaAllocator*)TlsGetValue( s_tls_context.tls_index );
 #else

@@ -68,7 +68,7 @@ struct ShaderReflectionInfo {
 
     u16                             get_binding_index( cstring name );
     u16                             get_binding_index_from_hash( u64 name_hash );
-    
+
     void                            dump_bindings();
 }; // struct ShaderReflectionInfo
 
@@ -111,7 +111,7 @@ struct PipelineState {
 
     const PipelineVariant&          active_variant( ShaderLanguage language ) const { return pipelines.active_variant( language ); }
     PipelineHandle                  active( ShaderLanguage language ) const         { return pipelines.active( language ); }
-    
+
     const PipelineVariant&          any_variant() const     { return pipelines.any_variant(); }
     PipelineHandle                  any() const             { return pipelines.any(); }
 
@@ -254,7 +254,7 @@ struct DescriptorSetBinder {
 //
 struct RendererResourcePoolCreation {
 
-    u16                         textures    = 256;
+    u16                         textures    = 1024;
     u16                         buffers     = 256;
     u16                         samplers    = 64;
     u16                         materials   = 256;
@@ -295,7 +295,7 @@ struct Renderer : public Service {
     //BufferResource*             create_buffer( const BufferCreation& creation );
     //BufferResource*             create_buffer( VkBufferUsageFlags type, ResourceUsageType::Enum usage, u32 size, void* data, cstring name, bool bindless = false );
 
-    TextureResource*            create_texture( const ImageCreation& creation );
+    TextureResource*            create_texture( const ImageCreation& creation, bool add_to_bindless = true );
     TextureResource*            create_texture_from_file( cstring full_filename, bool generate_mips, bool srgb );
 
     SamplerResource*            create_sampler( const SamplerCreation& creation );
@@ -321,7 +321,7 @@ struct Renderer : public Service {
     PipelineLayoutHandle        create_pipeline_layout( const ShaderReflection& reflection );
     PipelineHandle              create_pipeline( const ShaderReflection& reflection, PipelineCreation& creation, ShaderLanguage language = ShaderLanguage::Glsl );
 
-    DescriptorSetHandle         create_descriptor_set( DescriptorSetBinder& binder, ShaderReflectionInfo* reflection_info, 
+    DescriptorSetHandle         create_descriptor_set( DescriptorSetBinder& binder, ShaderReflectionInfo* reflection_info,
                                                        PipelineHandle pipeline, u32 frame_index, RenderBlackboard& render_blackboard );
     BufferHandle                create_buffer_with_upload( const BufferCreation& creation, const BufferUpload& upload );
 
@@ -362,6 +362,8 @@ struct Renderer : public Service {
     ResourceCache               resource_cache;
 
     StaticArray<ImageHandle, 128> images_to_update;
+
+    Array<ImageViewHandle>      views_waiting_upload;
 
     AsynchronousLoader*         async_loader    = nullptr;
     GpuDevice*                  gpu             = nullptr;

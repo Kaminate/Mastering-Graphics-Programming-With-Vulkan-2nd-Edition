@@ -26,7 +26,7 @@ layout(buffer_reference, std430, buffer_reference_align = 4) buffer vec2_array_t
     vec2 v;
 };
 
-layout(buffer_reference, std430, buffer_reference_align = 2) buffer int_array_type {
+layout(buffer_reference, std430, buffer_reference_align = 2) buffer u16_array_type {
     uint16_t v;
 };
 
@@ -65,7 +65,9 @@ struct MeshDraw {
     uint        index_buffer_offset;
 
     uint        vertex_count;
-    uint        _pad[3];
+    uint        meshlet_vertex_offset;
+    uint        joints_buffer_offset;
+    uint        weights_buffer_offset;
 };
 
 struct MeshInstanceDraw {
@@ -95,7 +97,8 @@ struct MeshDrawCommand
 
     uint        groupCountY;
     uint        groupCountZ;
-    uint        pad[2];
+    uint        _pad000;
+    uint        _pad001;
 };
 
 layout ( std430, set = MATERIAL_SET, binding = 2 ) readonly buffer MeshDraws {

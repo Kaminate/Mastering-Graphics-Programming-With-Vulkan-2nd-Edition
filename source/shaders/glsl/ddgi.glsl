@@ -93,7 +93,7 @@ void main() {
         uint mesh_index = mesh_instance_draws[ gl_GeometryIndexEXT ].mesh_draw_index;
         MeshDraw mesh = mesh_draws[ mesh_index ];
 
-        int_array_type index_buffer = int_array_type( mesh.index_buffer );
+        u16_array_type index_buffer = u16_array_type( mesh.index_buffer );
         int i0 = index_buffer[ gl_PrimitiveID * 3 ].v;
         int i1 = index_buffer[ gl_PrimitiveID * 3 + 1 ].v;
         int i2 = index_buffer[ gl_PrimitiveID * 3 + 2 ].v;

@@ -126,7 +126,7 @@ float4 scattering_extinction_from_color_density( float3 color, float density ) {
 }
 
 
-ConstantBuffer<GpuVolumetricFogConstants> fog : register(b40, space1);
+[[vk::binding(40, 1)]] ConstantBuffer<GpuVolumetricFogConstants> fog : register(b40, space1);
 
 
 #if defined(COMPUTE_INJECT_DATA)

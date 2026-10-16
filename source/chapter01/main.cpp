@@ -427,7 +427,7 @@ int main( int argc, char** argv ) {
     using namespace raptor;
 
     AppSettings settings;
-    settings.load( RAPTOR_DATA_FOLDER, RAPTOR_CHAPTER_NAME );
+    settings.load( RAPTOR_DATA_FOLDER, RAPTOR_CHAPTER_NAME, argc, argv );
 
     time_service_init();
 
@@ -1199,10 +1199,8 @@ int main( int argc, char** argv ) {
         // New frame
         if ( !window.minimized ) {
             gpu.wait_for_previous_frame();
-            VkResult result = gpu.acquire_next_swapchain_image();
-            if ( result == VK_ERROR_OUT_OF_DATE_KHR ) {
-                gpu.resize_swapchain();
-            }
+            
+            gpu.acquire_next_swapchain_image();
             gpu.update_descriptors();
             gpu.reset_pools();
         }
@@ -1314,7 +1312,7 @@ int main( int argc, char** argv ) {
 
         imgui->finalize_draw_data();
 
-        if ( !window.minimized ) {
+        if ( !window.minimized && gpu.swapchain_image_acquired ) {
             raptor::CommandBuffer* gfx_cb = gpu.allocate_command_buffer( 0, gpu.current_frame, CommandQueueType::Graphics );
             gfx_cb->begin();
             gpu.gpu_profiler->begin_command_buffer( gfx_cb );
@@ -1412,7 +1410,6 @@ int main( int argc, char** argv ) {
                               present_sync.signals.as_span() );
 
             gpu.present();
-            gpu.resolve_timestamps();
 
         } else {
             ImGui::Render();

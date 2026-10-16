@@ -104,7 +104,7 @@ else()
         ../../binaries/assimp/linux/lib)
 
     target_include_directories(${PROJECT_NAME} PRIVATE
-        ${SDL2_INCLUDE_DIRS})
+        ${SDL3_INCLUDE_DIRS})
 endif()
 
 if (WIN32)
@@ -122,7 +122,7 @@ else()
         dl
         pthread
         assimp
-        SDL2::SDL2)
+        SDL3::SDL3)
 endif()
 
 target_link_libraries(${PROJECT_NAME} PRIVATE

@@ -270,9 +270,10 @@ static ImageViewHandle get_viewable_image_view( GpuDevice& gpu, const ImageViewe
     return feature.is_debuggable( gpu, handle ) ? handle : ImageViewHandle{};
 }
 
-void ImageViewerRenderConfig::draw_imgui( GpuDevice& gpu, ImageViewerRenderingFeature& feature ) {
+bool ImageViewerRenderConfig::draw_imgui( GpuDevice& gpu, ImageViewerRenderingFeature& feature ) {
 
     ImGui::PushID( "ImageViewerRenderConfig" );
+    bool cleared = false;
 
     const u32 first_view = gpu.dummy_image_view.index();
     const u32 view_count = gpu.image_views.size;
@@ -308,10 +309,22 @@ void ImageViewerRenderConfig::draw_imgui( GpuDevice& gpu, ImageViewerRenderingFe
         ImGui::EndCombo();
     }
 
+    ImGui::SameLine();
+    if ( ImGui::Button( "Clear" ) ) {
+        input = {};
+        feature.input = {};
+        feature.requested = false;
+        fullscreen = false;
+        mip = 0;
+        zoom = 1.0f;
+        pan = { 0.0f, 0.0f };
+        cleared = true;
+    }
+
     if ( !feature.is_debuggable( gpu, input ) || feature.output_view.is_invalid() ) {
         ImGui::TextUnformatted( "Select an image." );
         ImGui::PopID();
-        return;
+        return cleared;
     }
 
     const ImageView* view = gpu.get_image_view( input );
@@ -427,6 +440,7 @@ void ImageViewerRenderConfig::draw_imgui( GpuDevice& gpu, ImageViewerRenderingFe
     feature.requested = true;
 
     ImGui::PopID();
+    return cleared;
 }
 
 // VolumetricFogRenderConfig /////////////////////////////////////////////

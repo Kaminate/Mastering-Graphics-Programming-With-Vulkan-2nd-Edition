@@ -108,7 +108,7 @@ struct CommandBuffer {
     u32                     get_subgroup_sized( u32 group );
 
     // Non-drawing methods
-    void                    copy_buffer_to_image( ImageHandle image, BufferHandle buffer, sizet buffer_offset );
+    void                    copy_buffer_to_image( ImageHandle image, BufferHandle buffer, sizet buffer_offset, bool copy_mips );
 
     [[deprecated("Use copy_buffer_to_image method")]]
     void                    upload_texture_data( ImageHandle texture, void* texture_data, BufferHandle staging_buffer, sizet staging_buffer_offset );

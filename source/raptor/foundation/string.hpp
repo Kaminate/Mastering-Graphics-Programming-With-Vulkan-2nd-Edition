@@ -72,10 +72,11 @@ namespace raptor {
         char*                       data                    = nullptr;
         u32                         buffer_size             = 1024;
         u32                         current_size            = 0;
-        
+
         Allocator*                  allocator               = nullptr;
 
     }; // struct StringArray
 
+    void replace_with( char* string, cstring from, cstring to );
 
 } // namespace raptor

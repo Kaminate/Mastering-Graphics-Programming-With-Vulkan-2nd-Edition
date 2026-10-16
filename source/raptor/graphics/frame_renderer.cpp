@@ -18,6 +18,8 @@
 
 #include "../shaders/shared_structs.h"
 
+#include <cfloat>
+
 namespace raptor {
 
 // FrameRenderer //////////////////////////////////////////////////////////
@@ -267,6 +269,9 @@ static void copy_gpu_material_data( GpuDevice& gpu, GpuMaterialData& gpu_mesh_da
     gpu_mesh_data.normals_buffer = gpu.get_buffer_device_address( mesh.normal_buffer ) + mesh.normal_offset;
 
     gpu_mesh_data.vertex_count = mesh.position_count;
+    gpu_mesh_data.meshlet_vertex_offset = mesh.meshlet_vertex_offset;
+    gpu_mesh_data.joints_buffer_offset = mesh.joints_offset;
+    gpu_mesh_data.weights_buffer_offset = mesh.weights_offset;
 }
 
 //
@@ -743,7 +748,7 @@ void DrawTask::ExecuteRange( enki::TaskSetPartition range_, uint32_t threadnum_ 
 
     // Decide which image view to use for the final output
     ImageViewHandle final_image_view = texture->resource_info.texture.image_view;
-    
+
     bool show_image_viewer_fullscreen = false;
     if ( render_config.taa.enabled && render_blackboard.taa_output_image_view.is_valid() ) {
         final_image_view = render_blackboard.taa_output_image_view;

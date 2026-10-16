@@ -1,7 +1,9 @@
 #include "graphics/asynchronous_loader.hpp"
 #include "graphics/renderer.hpp"
+#include "graphics/dds_reader.hpp"
 
 #include "foundation/time.hpp"
+#include "foundation/numerics.hpp"
 
 #define STBI_FAILURE_USERMSG
 #define STB_IMAGE_IMPLEMENTATION
@@ -28,7 +30,7 @@ void AsynchronousLoader::init( Renderer* renderer_, Allocator* resident_allocato
         .size = staging_buffer_size,
         .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         .memory_usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-        .allocation_flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | 
+        .allocation_flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
                             VMA_ALLOCATION_CREATE_MAPPED_BIT,
         .name = "staging_buffer"});
 
@@ -86,58 +88,9 @@ void AsynchronousLoader::shutdown() {
 void AsynchronousLoader::update() {
     ZoneScopedN("AsynchronousLoaderV2::update");
 
-    // Process a limited amount of file load requests per update
-    {
-        FileLoadRequestV2 load_request;
-        const u32 k_max_files_per_update = 4;
-
-        for ( u32 i = 0; i < k_max_files_per_update; ++i ) {
-            if ( file_load_requests.size == 0 ) {
-                break;
-            }
-
-            // Get front load request and delete swap
-            load_request = file_load_requests.front();
-            file_load_requests.delete_swap( 0 );
-
-            // NOTE: check for image size and see if it fits in staging buffer
-            int x, y, comp;
-            stbi_info( load_request.path.c_str(), &x, &y, &comp );
-            const u32 image_size = u32( x ) * u32( y ) * 4u;
-
-            // Load request is already removed from array
-            if ( image_size > staging_buffer_size ) {
-                rprint( "Image %s is too large to fit in staging buffer (%llu bytes required, %u bytes available)\n",
-                        load_request.path.c_str(), image_size, staging_buffer_size );
-                RASSERTM( false, "Image too large to fit in staging buffer" );
-                continue;
-            }
-
-            i64 start_reading_file = time_now();
-
-            // TODO: add streaming allocator
-
-            u8* texture_data = stbi_load( load_request.path.c_str(), &x, &y, &comp, 4);
-
-            if ( texture_data ) {
-                rprint( "File %s read in %f ms\n", load_request.path, time_from_milliseconds( start_reading_file ) );
-
-                UploadRequestV2 upload_request{};
-                upload_request.type = UploadRequestType::TextureCpuToGpu;
-                upload_request.texture = load_request.texture;
-                upload_request.cpu_data = texture_data;
-                upload_request.size = image_size;
-
-                upload_requests.push( upload_request );
-            } else {
-                rprint( "Error reading file %s: %s\n", load_request.path, stbi_failure_reason() );
-            }
-        }
-    }
-
     // Check if previous batch is still in flight using timeline semaphore.
     // For now we keep only one batch in flight to simplify things.
-    
+
     if ( last_completed_transfer_value < last_signaled_transfer_value ) {
 
         const u32 current_frame = renderer->gpu->current_frame;
@@ -188,11 +141,76 @@ void AsynchronousLoader::update() {
     }
     inflight_buffers.clear();
 
+    // Process a limited amount of file load requests per update
+    FileLoadRequestV2 load_request;
+    const u32 k_max_files_per_update = 4;
+
+    for ( u32 i = 0; i < k_max_files_per_update; ++i ) {
+        if ( file_load_requests.size == 0 ) {
+            break;
+        }
+
+        // Get front load request and delete swap
+        load_request = file_load_requests.front();
+        file_load_requests.delete_swap( 0 );
+
+        u32 image_size = load_request.size;
+
+        i64 start_reading_file = time_now();
+
+        // TODO: add streaming allocator
+
+        u8* texture_data = nullptr;
+        if ( load_request.dds ) {
+            texture_data = dds_load( load_request.path.c_str(), image_size );
+        } else {
+            int x = load_request.width;
+            int y = load_request.height;
+            int comp = load_request.comp;
+            texture_data = stbi_load( load_request.path.c_str(), &x, &y, &comp, 4);
+        }
+
+        if ( texture_data ) {
+            rprint( "File %s read in %f ms\n", load_request.path.c_str(), time_from_milliseconds( start_reading_file ) );
+
+            UploadRequestV2 upload_request{};
+            upload_request.type = UploadRequestType::TextureCpuToGpu;
+            upload_request.texture = load_request.texture;
+            upload_request.cpu_data = texture_data;
+            upload_request.size = image_size;
+            upload_request.dds_format = load_request.dds;
+
+            upload_requests.push( upload_request );
+        } else {
+            rprint( "Error reading file %s: %s\n", load_request.path.c_str(), load_request.dds ? "DDS read failed" : stbi_failure_reason() );
+        }
+    }
+
     // At this point we finished processing previous requests, reset offset
     staging_buffer_offset = 0;
 
     if ( upload_requests.size == 0 ) {
         return;
+    }
+
+    // The previous batch has completed, so it is safe to replace the staging buffer.
+    u32 required_staging_size = staging_buffer_size;
+    for ( u32 i = 0; i < upload_requests.size; ++i ) {
+        const UploadRequestV2& request = upload_requests[ i ];
+        if ( request.type != UploadRequestType::BufferCpuToGpu ) {
+            required_staging_size = raptor::max( required_staging_size, request.size );
+        }
+    }
+    if ( required_staging_size > staging_buffer_size ) {
+        renderer->gpu->destroy_buffer( staging_buffer_handle );
+        staging_buffer_size = required_staging_size;
+        staging_buffer_handle = renderer->gpu->create_buffer( {
+            .size = staging_buffer_size,
+            .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            .memory_usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+            .allocation_flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                VMA_ALLOCATION_CREATE_MAPPED_BIT,
+            .name = "staging_buffer" } );
     }
 
     // Record copy commands until the staging buffer is full or no more requests
@@ -215,7 +233,7 @@ void AsynchronousLoader::update() {
         switch ( request.type ) {
             case UploadRequestType::TextureCpuToGpu: {
                 // Check if we have enough space in staging buffer
-                constexpr u32 k_texture_alignment = 4;
+                constexpr u32 k_texture_alignment = 16;
 
                 const sizet current_offset = staging_buffer_offset.load();
                 const sizet aligned_offset = memory_align( current_offset, k_texture_alignment );
@@ -240,17 +258,21 @@ void AsynchronousLoader::update() {
                 // NOTE: this is the first command written to this texture, update the owner
                 gpu->set_initial_image_owner( request.texture, QueueType::CopyTransfer );
 
-                command_buffer.copy_buffer_to_image( request.texture, staging_buffer_handle, aligned_offset );
+                command_buffer.copy_buffer_to_image( request.texture, staging_buffer_handle, aligned_offset, request.dds_format );
 
                 // Release ownership to main family from now on.
                 if ( gpu->vulkan_transfer_queue_family != gpu->vulkan_main_queue_family ) {
-                    command_buffer.release_image_ownership( request.texture, range_color( 0, 1, 0, 1 ),
+                    command_buffer.release_image_ownership( request.texture, range_color( 0, request.dds_format ? VK_REMAINING_MIP_LEVELS : 1, 0, 1 ),
                                                             gpu->vulkan_main_queue_family );
                     command_buffer.flush_barriers();
                 }
 
                 // Free CPU data
-                stbi_image_free( (void*)request.cpu_data );
+                if ( request.dds_format ) {
+                    dds_free( ( u8* )request.cpu_data );
+                } else {
+                    stbi_image_free( (void*)request.cpu_data );
+                }
 
                 break;
             }
@@ -262,7 +284,7 @@ void AsynchronousLoader::update() {
                 RASSERT( src->size == dst->size );
 
                 command_buffer.copy_buffer( request.cpu_buffer, 0, request.gpu_buffer, 0, src->size );
-                inflight_buffers.push( { .source = request.cpu_buffer, .destination = request.gpu_buffer, 
+                inflight_buffers.push( { .source = request.cpu_buffer, .destination = request.gpu_buffer,
                                          .timeline_value = signal_value, .keep_src = request.keep_src } );
 
                 request_processed = true;
@@ -365,12 +387,19 @@ void AsynchronousLoader::update() {
     last_signaled_transfer_value = signal_value;
 }
 
-void AsynchronousLoader::request_texture_load_from_file( cstring filename, ImageHandle texture ) {
+void AsynchronousLoader::request_texture_load_from_file( cstring filename, ImageHandle texture,
+    int width, int height, int comp, u32 size, bool dds ) {
     // TODO: add multithreaded safety
     FileLoadRequestV2& request = file_load_requests.push_use();
     request.path.set( filename );
     request.texture = texture;
     request.buffer = {};
+
+    request.size = size;
+    request.width = width;
+    request.height = height;
+    request.comp = comp;
+    request.dds = dds;
 }
 
 void AsynchronousLoader::request_buffer_copy( BufferHandle src, BufferHandle dst, bool keep_src ) {

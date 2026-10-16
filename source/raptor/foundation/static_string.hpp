@@ -2,6 +2,8 @@
 
 #include "foundation/string_view.hpp"
 
+#include <cstdarg>
+
 namespace raptor {
 
 //

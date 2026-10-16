@@ -208,6 +208,7 @@ struct ImageCreation {
     void*                           initial_data    = nullptr;  // Needs VK_IMAGE_USAGE_TRANSFER_DST_BIT.
     ImageHandle                     alias;                      // When valid, aliases that image's memory.
     u16                             owner_queue_family = u16_max;
+    bool                            generate_mips   = false;
 
     cstring                         name            = nullptr;
 
@@ -279,7 +280,7 @@ struct ShaderCompilationStage {
     ShaderSource                    source;
 
     StaticArray<cstring, k_max_headers> headers;  // Headers used in the shader.
-    StaticArray<u64, k_max_headers + 1> shader_file_hashes;
+    StaticArray<u64, k_max_headers + 2> shader_file_hashes;  // Headers + main file + all the includes.
 
     StaticArray<cstring, k_max_defines> defines;
 
@@ -628,7 +629,7 @@ struct ResourceUpdate {
 
     ResourceUpdateType::Enum        type;
     ResourceHandle                  handle;
-    u32                             current_frame;
+    u64                             release_value;
     u32                             deleting;
 }; // struct ResourceUpdate
 
@@ -650,7 +651,7 @@ struct ImageViewUpdate {
 
 // Resources /////////////////////////////////////////////////////////////
 
-static const u32                    k_max_swapchain_images = 3;
+static const u32                    k_max_swapchain_images = 8;
 static const u32                    k_max_frames           = 2;
 
 //
@@ -740,6 +741,7 @@ struct Image {
     u16                             mip_base_level  = 0;    // Not 0 when texture is a view.
     u16                             array_base_layer = 0;   // Not 0 when texture is a view.
     bool                            sparse = false;
+    bool                            generate_mips = false;
 
     ImageHandle                     handle;
     ImageHandle                     alias_image;
@@ -810,6 +812,7 @@ struct DescriptorSet {
     VkAccelerationStructureKHR      as              = VK_NULL_HANDLE;
 
     const DescriptorSetLayout*      layout          = nullptr;
+    VkDescriptorPool                vk_descriptor_pool = VK_NULL_HANDLE;
     u32                             num_resources   = 0;
 }; // struct DesciptorSet
 

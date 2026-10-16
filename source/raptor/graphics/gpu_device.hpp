@@ -56,8 +56,8 @@ struct GpuDescriptorPoolCreation {
 struct GpuResourcePoolCreation {
 
     u16         buffers                 = 256;
-    u16         images                  = 256;
-    u16         image_views             = 256;
+    u16         images                  = 1024;
+    u16         image_views             = 1024;
     u16         pipelines               = 256;
     u16         samplers                = 256;
     u16         descriptor_set_layouts  = 256;
@@ -66,7 +66,7 @@ struct GpuResourcePoolCreation {
     u16         shaders                 = 256;
     u16         page_pools              = 64;
     u16         pipeline_layouts        = 256;
-    u16         blases                  = 128;
+    u16         blases                  = 512;
     u16         tlases                  = 8;
 }; // struct GpuResourcePoolCreation
 
@@ -104,7 +104,7 @@ struct GpuDeviceCreation {
     void*                           window          = nullptr; // Pointer to API-specific window: SDL_Window, GLFWWindow
     u16                             width           = 1;
     u16                             height          = 1;
-    
+
     PresentMode::Enum               present_mode = PresentMode::VSync;
 
     u16                             gpu_time_queries_per_frame  = 48;
@@ -202,7 +202,7 @@ struct GpuDevice : public Service {
     void                            unbind_image_pages( PagePoolHandle pool_handle, ImageHandle handle, u32 x, u32 y, u32 width, u32 height, u32 layer, u32 mip_level );
 
     void                            trim_page_pool( PagePoolHandle pool_handle );
-    
+
     SparseImageMemoryStats          get_sparse_image_memory_stats( PagePoolHandle pool, ImageHandle image );
 
     void                            update_descriptor_set( DescriptorSetHandle set );
@@ -214,6 +214,8 @@ struct GpuDevice : public Service {
     void                            set_present_mode( PresentMode::Enum mode );
 
     void                            frame_counters_advance();
+
+    u64                             resource_release_value() const      { return absolute_frame + 1; }
 
     VkDeviceAddress                 get_buffer_device_address( BufferHandle handle );
 
@@ -371,6 +373,7 @@ struct GpuDevice : public Service {
     bool                            bindless_supported                  = false;
     bool                            timestamps_enabled                  = false;
     bool                            resized                             = false;
+    bool                            swapchain_image_acquired            = false;
     bool                            vertical_sync                       = false;
     bool                            cooperative_vector_supported        = false;
     VkDeviceSize                    cooperative_vector_matrix_alignment = 64;
@@ -418,7 +421,8 @@ struct GpuDevice : public Service {
 
     VkSemaphore                     vulkan_compute_timeline_semaphore;
     u64                             last_compute_semaphore_value = 0;
-    bool                            has_async_work = false;
+
+    u64                             compute_timeline_frame_values[ k_max_frames ]{};
 
     VkFence                         vulkan_immediate_fence;
 
@@ -428,6 +432,7 @@ struct GpuDevice : public Service {
     VkPresentModeKHR                vulkan_present_mode;
     VkSwapchainKHR                  vulkan_swapchain;
     u32                             vulkan_swapchain_image_count;
+    u32                             vulkan_swapchain_requested_image_count = 3;
 
     VulkanDebugOptions              debug_options;
     VkDebugReportCallbackEXT        vulkan_debug_callback;

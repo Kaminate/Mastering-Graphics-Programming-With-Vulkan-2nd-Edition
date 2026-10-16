@@ -142,14 +142,35 @@ void DemoUi::common_outputs_ui() {
     }
 
     if ( frame_renderer && frame_renderer->image_viewer && begin_tab( DemoUiTab::ImageViewer ) ) {
-        frame_renderer->render_config.image_viewer.draw_imgui( *frame_renderer->renderer->gpu, *frame_renderer->image_viewer );
+        const bool cleared = frame_renderer->render_config.image_viewer.draw_imgui( *frame_renderer->renderer->gpu,
+                                                                                     *frame_renderer->image_viewer );
         end_tab();
+        if ( cleared && frame_graph ) {
+            frame_graph->clear_debug_image_selection();
+        }
     }
 
     if ( begin_tab( DemoUiTab::FrameGraph ) ) {
         frame_graph->add_ui();
         frame_graph->debug_ui();
         end_tab();
+    }
+
+    if ( frame_graph && frame_renderer && frame_renderer->image_viewer ) {
+        ImageViewHandle selected_image;
+        if ( frame_graph->consume_debug_image_selection( selected_image ) ) {
+            GpuDevice& gpu = *frame_renderer->renderer->gpu;
+            if ( frame_renderer->image_viewer->is_debuggable( gpu, selected_image ) ) {
+                ImageViewerRenderConfig& config = frame_renderer->render_config.image_viewer;
+                config.input = selected_image;
+                config.mip = 0;
+                config.zoom = 1.0f;
+                config.pan = { 0.0f, 0.0f };
+                open_tab( DemoUiTab::ImageViewer );
+            } else {
+                frame_graph->clear_debug_image_selection();
+            }
+        }
     }
 
     if ( begin_tab( DemoUiTab::Memory ) ) {

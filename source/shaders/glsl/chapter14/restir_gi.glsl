@@ -675,7 +675,7 @@ void main() {
         uint mesh_index = instance.mesh_draw_index;
         MeshDraw mesh = mesh_draws[mesh_index];
 
-        int_array_type index_buffer = int_array_type( mesh.index_buffer );
+        u16_array_type index_buffer = u16_array_type( mesh.index_buffer );
         int i0 = index_buffer[payload.primitive_id * 3].v;
         int i1 = index_buffer[payload.primitive_id * 3 + 1].v;
         int i2 = index_buffer[payload.primitive_id * 3 + 2].v;
@@ -716,16 +716,19 @@ void main() {
         vec4 p1_screen = frame.view_projection * p1_world;
         vec4 p2_screen = frame.view_projection * p2_world;
 
-        ivec2 texture_size = textureSize( global_textures[nonuniformEXT( mesh.textures.x )], 0 );
+        float lod = 0.0;
+        if ( mesh.textures.x != INVALID_TEXTURE_INDEX ) {
+            ivec2 texture_size = textureSize( global_textures[nonuniformEXT( mesh.textures.x )], 0 );
 
-        float texel_area = texture_size.x * texture_size.y *
-            abs( ( uv1.x - uv0.x ) * ( uv2.y - uv0.y ) -
-                 ( uv2.x - uv0.x ) * ( uv1.y - uv0.y ) );
+            float texel_area = texture_size.x * texture_size.y *
+                abs( ( uv1.x - uv0.x ) * ( uv2.y - uv0.y ) -
+                     ( uv2.x - uv0.x ) * ( uv1.y - uv0.y ) );
 
-        float triangle_area = abs( ( p1_screen.x - p0_screen.x ) * ( p2_screen.y - p0_screen.y ) -
-                                   ( p2_screen.x - p0_screen.x ) * ( p1_screen.y - p0_screen.y ) );
+            float triangle_area = abs( ( p1_screen.x - p0_screen.x ) * ( p2_screen.y - p0_screen.y ) -
+                                       ( p2_screen.x - p0_screen.x ) * ( p1_screen.y - p0_screen.y ) );
 
-        float lod = floor( 0.5 * log2( texel_area / triangle_area ) );
+            lod = floor( 0.5 * log2( texel_area / triangle_area ) );
+        }
 
         float b = payload.barycentric_weights.x;
         float c = payload.barycentric_weights.y;
@@ -762,7 +765,11 @@ void main() {
 
         reservoirSample.ns = normal;
 
-        vec4 bounce_albedo = textureLod( global_textures[nonuniformEXT( mesh.textures.x )], uv, lod );
+        vec4 bounce_albedo = mesh.base_color_factor;
+        if ( mesh.textures.x != INVALID_TEXTURE_INDEX ) {
+            vec4 texture_color = textureLod( global_textures[nonuniformEXT( mesh.textures.x )], uv, lod );
+            bounce_albedo *= vec4( decode_srgb( texture_color.rgb ), texture_color.a );
+        }
 
         vec3 bounce_orm = calculate_pbr_parameters( mesh.metallic_roughness_occlusion_factor.x, mesh.metallic_roughness_occlusion_factor.y,
                                                     mesh.textures.y, mesh.metallic_roughness_occlusion_factor.z, mesh.textures.w, uv );

@@ -9,6 +9,8 @@
 #include "external/ufbx/ufbx.h"
 #include "external/stb_image.h"
 
+#include <cfloat>
+
 namespace raptor {
 
 struct MeshPartInfo {
@@ -39,11 +41,13 @@ void FbxModel::load_model( cstring filename, cstring path, ArenaAllocator* temp_
     StringBuffer temp_name_buffer;
     temp_name_buffer.init( 4096, temp_allocator );
 
-    for ( u32 texture_index = 0; texture_index < fbx_scene->textures.count; ++texture_index ) {
-        ufbx_texture* texture = fbx_scene->textures.data[ texture_index ];
+    const u32 image_offset = render_scene->images.size;
+    const u32 texture_file_count = ( u32 )fbx_scene->texture_files.count;
+    for ( u32 texture_index = 0; texture_index < texture_file_count; ++texture_index ) {
+        const ufbx_texture_file& texture = fbx_scene->texture_files.data[ texture_index ];
 
         // Reconstruct file path
-        char* full_filename = temp_name_buffer.append_use_f( "%s%s", path, texture->filename.data );
+        char* full_filename = temp_name_buffer.append_use_f( "%s%s", path, texture.filename.data );
 
         TextureResource* tr = renderer->create_texture_from_file( full_filename, true, false );
         RASSERT( tr != nullptr );
@@ -53,6 +57,16 @@ void FbxModel::load_model( cstring filename, cstring path, ArenaAllocator* temp_
         // Reset name buffer
         temp_name_buffer.clear();
     }
+
+    const auto get_scene_texture_index = [ image_offset, texture_file_count ]( const ufbx_texture* texture ) -> u16 {
+        if ( texture == nullptr || !texture->has_file || texture->file_index >= texture_file_count ) {
+            return k_invalid_scene_texture_index;
+        }
+
+        const u32 scene_texture_index = image_offset + texture->file_index;
+        RASSERT( scene_texture_index < k_invalid_scene_texture_index );
+        return ( u16 )scene_texture_index;
+    };
 
     i64 end_loading_textures = time_now();
 
@@ -122,11 +136,7 @@ void FbxModel::load_model( cstring filename, cstring path, ArenaAllocator* temp_
             // MeshInstance struct. We won't do this for now.
             ufbx_material* material = fbx_mesh->materials.data[ mesh_part.index ];
 
-            if ( material->pbr.base_color.texture != nullptr ) {
-                mesh.pbr_material.diffuse_texture_index = material->pbr.base_color.texture->file_index;
-            } else {
-                mesh.pbr_material.diffuse_texture_index = k_invalid_scene_texture_index;
-            }
+            mesh.pbr_material.diffuse_texture_index = get_scene_texture_index( material->pbr.base_color.texture );
 
             if ( material->shader_type == UFBX_SHADER_FBX_LAMBERT  ) {
                 mesh.pbr_material.base_color_factor = glm::vec4( material->fbx.diffuse_color.value_vec3.x,
@@ -140,23 +150,9 @@ void FbxModel::load_model( cstring filename, cstring path, ArenaAllocator* temp_
                                                                  material->pbr.base_factor.value_vec4.w );
             }
 
-            if ( material->pbr.normal_map.texture != nullptr ) {
-                mesh.pbr_material.normal_texture_index = material->pbr.normal_map.texture->file_index;
-            } else {
-                mesh.pbr_material.normal_texture_index = k_invalid_scene_texture_index;
-            }
-
-            if ( material->pbr.metalness.texture != nullptr ) {
-                mesh.pbr_material.metalness_texture_index = material->pbr.metalness.texture->file_index;
-            } else {
-                mesh.pbr_material.metalness_texture_index = k_invalid_scene_texture_index;
-            }
-
-            if ( material->pbr.roughness.texture != nullptr ) {
-                mesh.pbr_material.roughness_texture_index = material->pbr.roughness.texture->file_index;
-            } else {
-                mesh.pbr_material.roughness_texture_index = k_invalid_scene_texture_index;
-            }
+            mesh.pbr_material.normal_texture_index = get_scene_texture_index( material->pbr.normal_map.texture );
+            mesh.pbr_material.metalness_texture_index = get_scene_texture_index( material->pbr.metalness.texture );
+            mesh.pbr_material.roughness_texture_index = get_scene_texture_index( material->pbr.roughness.texture );
 
             if ( material->pbr.metalness.has_value ) {
                 mesh.pbr_material.metallic = material->pbr.metalness.value_real;

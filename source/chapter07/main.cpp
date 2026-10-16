@@ -90,7 +90,7 @@ int main( int argc, char** argv ) {
     using namespace raptor;
 
     AppSettings settings;
-    settings.load( RAPTOR_DATA_FOLDER, RAPTOR_CHAPTER_NAME );
+    settings.load( RAPTOR_DATA_FOLDER, RAPTOR_CHAPTER_NAME, argc, argv );
 
     // Init services
     MemoryServiceConfiguration memory_configuration;
@@ -323,10 +323,8 @@ int main( int argc, char** argv ) {
         // New frame
         if ( !window.minimized ) {
             gpu.wait_for_previous_frame();
-            VkResult result = gpu.acquire_next_swapchain_image();
-            if ( result == VK_ERROR_OUT_OF_DATE_KHR ) {
-                gpu.resize_swapchain();
-            }
+            
+            gpu.acquire_next_swapchain_image();
             gpu.update_descriptors();
             gpu.reset_pools();
 
@@ -458,7 +456,7 @@ int main( int argc, char** argv ) {
             imgui->finalize_draw_data();
         }
 
-        if ( !window.minimized ) {
+        if ( !window.minimized && gpu.swapchain_image_acquired ) {
             DrawTask draw_task;
 
             draw_task.init( renderer.gpu, &frame_graph, &renderer, imgui, &gpu_profiler, &render_scene, &frame_renderer );
@@ -494,17 +492,17 @@ int main( int argc, char** argv ) {
             waits.clear();
             const u64 gfx_done_value = gpu.absolute_frame; // because gfx signals next_frame_value
 
-            // Wait for graphics, first stage will be transfer used in vkCmdCopyImage
+            // Wait for the previous frame's graphics work and async.
             waits.push( GpuDevice::build_semaphore_submit( gpu.vulkan_graphics_timeline_semaphore,
                                                            gfx_done_value,
-                                                           VK_PIPELINE_STAGE_2_TRANSFER_BIT ) );
+                                                           VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT ) );
 
             // SIGNALS
-            // Signal compute, last texture will be written by a compute shader
+            // Signal compute. Batch also has copies and acceleration structure builds.
             signals.clear();
             signals.push( GpuDevice::build_semaphore_submit( gpu.vulkan_compute_timeline_semaphore,
                                                              compute_value,
-                                                             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT ) );
+                                                             VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT ) );
 
             gpu.queue_submit( CommandQueueType::Compute, cbs.as_span(),
                               waits.as_span(),
@@ -530,6 +528,10 @@ int main( int argc, char** argv ) {
                                                                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT ) );
             }
 
+            // Texture uploads first.
+            if ( image_upload_cb ) {
+                cbs.push( image_upload_cb );
+            }
             cbs.push( frame_graph.get_command_buffer_from_batch( CommandQueueType::Graphics, 0 ) );
 
             // For now, this still does not work.
@@ -544,15 +546,11 @@ int main( int argc, char** argv ) {
 
             cbs.push( frame_graph.get_command_buffer_from_batch( CommandQueueType::Graphics, 1 ) );
             cbs.push( draw_task.gfx_cb );
-            // Add image upload commands if any
-            if ( image_upload_cb ) {
-                cbs.push( image_upload_cb );
-            }
 
             // WAITS
-            // Wait: compute work, will be used by fragment program
+            // Wait: compute work. Async outputs are read by compute passes too.
             waits.push( GpuDevice::build_semaphore_submit( gpu.vulkan_compute_timeline_semaphore, compute_value,
-                                                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT ) );
+                                                           VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT ) );
 
             // SIGNALS
             // First signal: render complete semaphore, 0 because is a binary semaphore.
@@ -568,7 +566,6 @@ int main( int argc, char** argv ) {
                               signals.as_span() );
 
             gpu.present();
-            gpu.resolve_timestamps();
             gpu.process_pending_resource_deletion();
         } else {
             ImGui::Render();

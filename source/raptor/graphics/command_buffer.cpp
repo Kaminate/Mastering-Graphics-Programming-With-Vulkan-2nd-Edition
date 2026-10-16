@@ -1,6 +1,7 @@
 #include "graphics/command_buffer.hpp"
 #include "graphics/gpu_device.hpp"
 #include "graphics/gpu_profiler.hpp"
+#include "graphics/dds_reader.hpp"
 
 #include "foundation/memory.hpp"
 #include "foundation/numerics.hpp"
@@ -234,7 +235,7 @@ void CommandBuffer::bind_vertex_buffer( BufferHandle handle_, u32 binding, u32 o
     VkDeviceSize offsets[] = { offset };
 
     VkBuffer vk_buffer = buffer->vk_buffer;
-    
+
     vkCmdBindVertexBuffers( vk_command_buffer, binding, 1, &vk_buffer, offsets );
 }
 
@@ -957,11 +958,10 @@ u32 CommandBuffer::get_subgroup_sized( u32 group ) {
     return raptor::ceilu32( group * 1.f / gpu_device->subgroup_size );
 }
 
-void CommandBuffer::copy_buffer_to_image( ImageHandle image_handle, BufferHandle buffer_handle, sizet buffer_offset ) {
+void CommandBuffer::copy_buffer_to_image( ImageHandle image_handle, BufferHandle buffer_handle, sizet buffer_offset, bool copy_mips ) {
 
     Image* image = gpu_device->get_image( image_handle );
     Buffer* staging_buffer = gpu_device->get_buffer( buffer_handle );
-    u32 image_size = image->width * image->height * 4;
 
     VkBufferImageCopy region = {};
     region.bufferOffset = buffer_offset;
@@ -976,24 +976,28 @@ void CommandBuffer::copy_buffer_to_image( ImageHandle image_handle, BufferHandle
     region.imageOffset = { 0, 0, 0 };
     region.imageExtent = { image->width, image->height, image->depth };
 
-    const VkImageSubresourceRange range = raptor::range_color( 0, 1, 0, 1 );
+    const VkImageSubresourceRange range = raptor::range_color( 0, copy_mips ? image->mip_level_count : 1, 0, 1 );
 
     // Pre copy memory barrier to perform layout transition
-    //util_add_image_barrier( gpu_device, vk_command_buffer, image, RESOURCE_STATE_COPY_DEST, 0, 1, false );
     add_image_barrier( image_handle, range, { VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL } );
     flush_barriers();
-    // Copy from the staging buffer to the image
-    vkCmdCopyBufferToImage( vk_command_buffer, staging_buffer->vk_buffer, image->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region );
 
-    // NOTE: This is moved outside for correctness.
-    // Post copy memory barrier
-    /*add_image_barrier( image_handle, range, { VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                       VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                       gpu_device->vulkan_main_queue_family } );*/
-
-    /*util_add_image_barrier_ext( gpu_device, vk_command_buffer, image, RESOURCE_STATE_COPY_SOURCE,
-                                0, 1, 0, 1, false, gpu_device->vulkan_transfer_queue_family, gpu_device->vulkan_main_queue_family,
-                                QueueType::CopyTransfer, QueueType::Graphics );*/
+    if ( copy_mips ) {
+        VkBufferImageCopy regions[ 16 ]{};
+        RASSERT( image->mip_level_count <= ArraySize( regions ) );
+        for ( u32 mip = 0; mip < image->mip_level_count; ++mip ) {
+            region.imageSubresource.mipLevel = mip;
+            region.imageExtent = { raptor::max( 1u, u32( image->width ) >> mip ),
+                                   raptor::max( 1u, u32( image->height ) >> mip ), 1 };
+            regions[ mip ] = region;
+            region.bufferOffset += dds_mip_size( region.imageExtent.width, region.imageExtent.height );
+        }
+        RASSERT( region.bufferOffset <= staging_buffer->size );
+        vkCmdCopyBufferToImage( vk_command_buffer, staging_buffer->vk_buffer, image->vk_image,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, image->mip_level_count, regions );
+    } else {
+        vkCmdCopyBufferToImage( vk_command_buffer, staging_buffer->vk_buffer, image->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region );
+    }
 }
 
 void CommandBuffer::upload_texture_data( ImageHandle texture_handle, void* texture_data, BufferHandle staging_buffer_handle, sizet staging_buffer_offset ) {

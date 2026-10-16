@@ -9,7 +9,10 @@
 #else
 #define MAX_PATH 65536
 #include <stdlib.h>
+#include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/sendfile.h>
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -148,6 +151,18 @@ bool file_copy( cstring existing_file, cstring new_file ) {
     close( dest );
     return successful_copy;
 #endif // _WIN64
+}
+
+sizet file_size( FileHandle file ) {
+    sizet current_pos = ftell( file );
+    fseek( file, 0, SEEK_END );
+    sizet size = ftell( file );
+    fseek( file, current_pos, SEEK_SET );
+
+    return size;
+}
+sizet file_tell( FileHandle file ) {
+    return ftell( file );
 }
 
 

@@ -3,6 +3,7 @@
 #include "foundation/file.hpp"
 #include "foundation/memory.hpp"
 #include "foundation/string.hpp"
+#include "foundation/numerics.hpp"
 
 #include "graphics/command_buffer.hpp"
 #include "graphics/gpu_device.hpp"
@@ -81,9 +82,16 @@ void FrameGraph::init( FrameGraphBuilder* builder_ ) {
     ed::Config config;
     config.SettingsFile = "framegraph.json";
     ed_context = ed::CreateEditor(&config);
+
+    clear_debug_image_selection();
 }
 
 void FrameGraph::shutdown() {
+    clear_debug_image_selection();
+
+    ed::DestroyEditor( ed_context );
+    ed_context = nullptr;
+
     for ( u32 i = 0; i < all_nodes.size; ++i ) {
         FrameGraphNodeHandle handle = all_nodes[ i ];
         FrameGraphNode* node = builder->access_node( handle );
@@ -103,6 +111,7 @@ void FrameGraph::shutdown() {
     persistent_update_nodes.shutdown();
     all_nodes.shutdown();
     nodes.shutdown();
+    node_layer.shutdown();
 
     local_allocator.shutdown();
 }
@@ -523,6 +532,22 @@ namespace FrameGraphNodeVisitStatus {
     }; // enum Enum
 }; // namespace FrameGraphNodeVisitStatus
 
+template<typename T>
+static void init_frame_graph_scratch_array( Array<T>& array, Allocator* allocator, u32 size ) {
+    array.init( allocator, size, size );
+    if ( size > 0 ) {
+        memset( array.data, 0, array.size_in_bytes() );
+    }
+}
+
+struct FrameGraphLayeringScratchEntry {
+    u32  earliest_layer;
+    u32  distance_to_sink;
+    u32  latest_layer;
+    u32  nearest_consumer_layer;
+    bool active_node;
+};
+
 void FrameGraph::compile() {
     // TODO(marco)
     // - cull inactive nodes
@@ -608,6 +633,7 @@ void FrameGraph::compile() {
     nodes.clear();
     persistent_update_nodes.clear();
 
+    u32 max_node = 0;
     for ( i32 i = sorted_nodes.size - 1; i >= 0; --i ) {
 #if FRAME_GRAPH_DEBUG
         FrameGraphNode* node = builder->access_node( sorted_nodes[ i ] );
@@ -615,11 +641,192 @@ void FrameGraph::compile() {
 #endif
 
         nodes.push( sorted_nodes[ i ] );
+        max_node = max( max_node, sorted_nodes[ i ].index );
     }
 
     node_status.shutdown();
     stack.shutdown();
     sorted_nodes.shutdown();
+
+    node_layer.init( allocator, max_node + 1, max_node + 1 );
+    memset( node_layer.data, 0, node_layer.size_in_bytes() );
+
+    ArenaAllocator* scratch_allocator = MemoryService::instance()->get_thread_allocator();
+    const sizet scratch_marker = scratch_allocator->get_marker();
+
+    // Calculate the earliest and latest legal layer for each node. The previous
+    // sink-distance-only assignment could place a late, short branch in column
+    // zero (for example debug_draw -> debug_mesh -> post processing), even
+    // though that branch executes near the end of the frame.
+    const u32 scratch_node_count = max_node + 1;
+    Array<FrameGraphLayeringScratchEntry> scratch;
+    init_frame_graph_scratch_array( scratch, scratch_allocator, scratch_node_count );
+
+    for ( u32 n = 0; n < nodes.size; ++n ) {
+        const FrameGraphNodeHandle node_handle = nodes[ n ];
+        scratch[ node_handle.index ].active_node = true;
+    }
+
+    // Relax the constraints instead of relying on the order returned by the
+    // frame graph's DFS. Shared branches can make that order unsuitable for a
+    // single reverse pass even though the dependency graph itself is valid.
+    for ( u32 iteration = 0; iteration < nodes.size; ++iteration ) {
+        bool changed = false;
+
+        for ( u32 n = 0; n < nodes.size; ++n ) {
+            const FrameGraphNodeHandle node_handle = nodes[ n ];
+            FrameGraphNode* node = access_node( node_handle );
+
+            for ( u32 input_index = 0; input_index < node->inputs.size; ++input_index ) {
+                FrameGraphResource* input_resource = access_resource( node->inputs[ input_index ] );
+                const FrameGraphNodeHandle producer = input_resource->producer;
+
+                if ( producer.index != k_invalid_index && producer.index != node_handle.index &&
+                     scratch[ producer.index ].active_node ) {
+                    const u32 required_layer = scratch[ producer.index ].earliest_layer + 1;
+                    if ( scratch[ node_handle.index ].earliest_layer < required_layer ) {
+                        scratch[ node_handle.index ].earliest_layer = required_layer;
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        if ( !changed ) {
+            break;
+        }
+    }
+
+    // Derive the reverse constraint from the exact resource producers rather
+    // than the aggregated edge list. This keeps versioned resources and the
+    // links shown by the editor on the same dependency graph.
+    for ( u32 iteration = 0; iteration < nodes.size; ++iteration ) {
+        bool changed = false;
+
+        for ( u32 n = 0; n < nodes.size; ++n ) {
+            const FrameGraphNodeHandle node_handle = nodes[ n ];
+            FrameGraphNode* node = access_node( node_handle );
+
+            for ( u32 input_index = 0; input_index < node->inputs.size; ++input_index ) {
+                FrameGraphResource* input_resource = access_resource( node->inputs[ input_index ] );
+                const FrameGraphNodeHandle producer = input_resource->producer;
+
+                if ( producer.index != k_invalid_index && producer.index != node_handle.index &&
+                     scratch[ producer.index ].active_node ) {
+                    const u32 required_distance = scratch[ node_handle.index ].distance_to_sink + 1;
+                    if ( scratch[ producer.index ].distance_to_sink < required_distance ) {
+                        scratch[ producer.index ].distance_to_sink = required_distance;
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        if ( !changed ) {
+            break;
+        }
+    }
+
+    u32 maximum_layer = 0;
+    for ( u32 n = 0; n < nodes.size; ++n ) {
+        maximum_layer = max( maximum_layer, scratch[ nodes[ n ].index ].earliest_layer );
+    }
+
+    // Prefer the node's actual compiled execution position within its legal
+    // interval. This moves late side branches to the right without violating
+    // producer-before-consumer ordering.
+    for ( u32 n = 0; n < nodes.size; ++n ) {
+        const FrameGraphNodeHandle node_handle = nodes[ n ];
+        scratch[ node_handle.index ].latest_layer = max( scratch[ node_handle.index ].earliest_layer,
+                                                         maximum_layer - min( maximum_layer, scratch[ node_handle.index ].distance_to_sink ) );
+        u32 preferred_layer = nodes.size > 1
+            ? u32( ( u64( n ) * maximum_layer + ( nodes.size - 1 ) / 2 ) / ( nodes.size - 1 ) )
+            : 0;
+
+        // A node with dependencies but no consumers is a terminal pass, not a
+        // graph source. Anchor it at the right edge; leave completely isolated
+        // nodes free to follow their declaration/execution position.
+        if ( scratch[ node_handle.index ].earliest_layer > 0 && scratch[ node_handle.index ].distance_to_sink == 0 ) {
+            preferred_layer = maximum_layer;
+        }
+
+        node_layer[ node_handle.index ] = min( max( preferred_layer, scratch[ node_handle.index ].earliest_layer ),
+                                               scratch[ node_handle.index ].latest_layer );
+    }
+
+    // A final forward relaxation makes the ordering invariant explicit even if
+    // several nodes choose opposite ends of overlapping legal intervals.
+    for ( u32 iteration = 0; iteration < nodes.size; ++iteration ) {
+        bool changed = false;
+
+        for ( u32 n = 0; n < nodes.size; ++n ) {
+            const FrameGraphNodeHandle node_handle = nodes[ n ];
+            FrameGraphNode* node = access_node( node_handle );
+
+            for ( u32 input_index = 0; input_index < node->inputs.size; ++input_index ) {
+                FrameGraphResource* input_resource = access_resource( node->inputs[ input_index ] );
+                const FrameGraphNodeHandle producer = input_resource->producer;
+
+                if ( producer.index != k_invalid_index && producer.index != node_handle.index &&
+                     scratch[ producer.index ].active_node ) {
+                    const u32 required_layer = node_layer[ producer.index ] + 1;
+                    if ( node_layer[ node_handle.index ] < required_layer ) {
+                        node_layer[ node_handle.index ] = required_layer;
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        if ( !changed ) {
+            break;
+        }
+    }
+
+    // Pull each producer toward its nearest consumer. Moving it to at most one
+    // column before the earliest consumer preserves every dependency while
+    // keeping chains such as transparent -> debug_draw -> debug_mesh compact.
+    for ( u32 iteration = 0; iteration < nodes.size; ++iteration ) {
+        for ( u32 n = 0; n < scratch.size; ++n ) {
+            scratch[ n ].nearest_consumer_layer = k_invalid_index;
+        }
+
+        for ( u32 n = 0; n < nodes.size; ++n ) {
+            const FrameGraphNodeHandle consumer_handle = nodes[ n ];
+            FrameGraphNode* consumer = access_node( consumer_handle );
+
+            for ( u32 input_index = 0; input_index < consumer->inputs.size; ++input_index ) {
+                FrameGraphResource* input_resource = access_resource( consumer->inputs[ input_index ] );
+                const FrameGraphNodeHandle producer = input_resource->producer;
+
+                if ( producer.index != k_invalid_index && producer.index != consumer_handle.index &&
+                     scratch[ producer.index ].active_node ) {
+                    scratch[ producer.index ].nearest_consumer_layer = min( scratch[ producer.index ].nearest_consumer_layer,
+                                                                            node_layer[ consumer_handle.index ] );
+                }
+            }
+        }
+
+        bool changed = false;
+        for ( u32 n = 0; n < nodes.size; ++n ) {
+            const FrameGraphNodeHandle node_handle = nodes[ n ];
+            const u32 consumer_layer = scratch[ node_handle.index ].nearest_consumer_layer;
+
+            if ( consumer_layer != k_invalid_index && consumer_layer > 0 ) {
+                const u32 compacted_layer = min( consumer_layer - 1, scratch[ node_handle.index ].latest_layer );
+                if ( node_layer[ node_handle.index ] < compacted_layer ) {
+                    node_layer[ node_handle.index ] = compacted_layer;
+                    changed = true;
+                }
+            }
+        }
+
+        if ( !changed ) {
+            break;
+        }
+    }
+
+    scratch_allocator->free_marker( scratch_marker );
 
     // NOTE(marco): allocations and deallocations are used for verification purposes only
     u32 resource_count = builder->resource_cache.resources.used_indices;
@@ -1280,36 +1487,590 @@ CommandBuffer* FrameGraph::get_command_buffer_from_batch( CommandQueueType queue
     return nullptr;
 }
 
+static constexpr f32 k_frame_graph_pin_radius = 4.0f;
+
+static ed::NodeId frame_graph_node_id( FrameGraphNodeHandle handle ) {
+    // Zero is the node editor's invalid id, while frame graph handles start at zero.
+    return handle.index + 1;
+}
+
+static constexpr u32 k_frame_graph_pin_id_stride = FrameGraphBuilder::k_max_resources_count;
+static constexpr u32 k_frame_graph_input_pin_id_base = FrameGraphBuilder::k_max_nodes_count + 1;
+static constexpr u32 k_frame_graph_output_pin_id_base =
+    k_frame_graph_input_pin_id_base + FrameGraphBuilder::k_max_nodes_count * k_frame_graph_pin_id_stride;
+static constexpr u32 k_frame_graph_link_id_base =
+    k_frame_graph_output_pin_id_base + FrameGraphBuilder::k_max_nodes_count * k_frame_graph_pin_id_stride;
+
+static ed::PinId frame_graph_input_pin_id( FrameGraphNodeHandle node, u32 input_index ) {
+    return k_frame_graph_input_pin_id_base + node.index * k_frame_graph_pin_id_stride + input_index;
+}
+
+static ed::PinId frame_graph_output_pin_id( FrameGraphNodeHandle node, u32 output_index ) {
+    return k_frame_graph_output_pin_id_base + node.index * k_frame_graph_pin_id_stride + output_index;
+}
+
+static ed::LinkId frame_graph_link_id( FrameGraphNodeHandle node, u32 input_index ) {
+    return k_frame_graph_link_id_base + node.index * k_frame_graph_pin_id_stride + input_index;
+}
+
+static f32 frame_graph_pin_width( cstring name ) {
+    const f32 pin_diameter = k_frame_graph_pin_radius * 2.0f;
+    return pin_diameter + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize( name ).x;
+}
+
+static bool draw_frame_graph_pin( cstring name, ed::PinId pin_id, ed::PinKind kind, bool selected ) {
+    const f32 pin_diameter = k_frame_graph_pin_radius * 2.0f;
+    const f32 line_height = ImGui::GetTextLineHeight();
+    const ImVec2 pin_row_min = ImGui::GetCursorScreenPos();
+    ImVec2 pin_center;
+
+    ed::BeginPin( pin_id, kind );
+
+    if ( kind == ed::PinKind::Input ) {
+        const ImVec2 pin_position = ImGui::GetCursorScreenPos();
+        pin_center = ImVec2( pin_position.x + k_frame_graph_pin_radius, pin_position.y + line_height * 0.5f );
+
+        ImGui::Dummy( ImVec2( pin_diameter, line_height ) );
+        ImGui::SameLine( 0.0f, ImGui::GetStyle().ItemInnerSpacing.x );
+        ImGui::TextUnformatted( name );
+    } else {
+        ImGui::TextUnformatted( name );
+        ImGui::SameLine( 0.0f, ImGui::GetStyle().ItemInnerSpacing.x );
+
+        const ImVec2 pin_position = ImGui::GetCursorScreenPos();
+        pin_center = ImVec2( pin_position.x + k_frame_graph_pin_radius, pin_position.y + line_height * 0.5f );
+        ImGui::Dummy( ImVec2( pin_diameter, line_height ) );
+    }
+
+    ed::PinPivotRect( pin_center, pin_center );
+    ed::EndPin();
+
+    const ImVec2 last_item_max = ImGui::GetItemRectMax();
+    const ImVec2 pin_row_max( last_item_max.x, pin_row_min.y + line_height );
+    ImVec4 pin_color = ed::GetStyle().Colors[ selected ? ed::StyleColor_SelNodeBorder : ed::StyleColor_PinRectBorder ];
+    pin_color.w = 1.0f;
+    ImGui::GetWindowDrawList()->AddCircleFilled( pin_center, k_frame_graph_pin_radius, ImGui::ColorConvertFloat4ToU32( pin_color ) );
+
+    return ImGui::IsMouseClicked( ImGuiMouseButton_Left ) && ImGui::IsMouseHoveringRect( pin_row_min, pin_row_max );
+}
+
+static bool find_frame_graph_output_pin( FrameGraph* frame_graph, FrameGraphNodeHandle consumer_handle,
+                                         u32 input_index, ed::PinId& output_pin_id ) {
+    FrameGraphNode* consumer = frame_graph->access_node( consumer_handle );
+    const FrameGraphResourceHandle input_handle = consumer->inputs[ input_index ];
+    FrameGraphResource* input_resource = frame_graph->access_resource( input_handle );
+
+    if ( input_resource->producer.index == k_invalid_index ) {
+        return false;
+    }
+
+    // V2 inputs directly reference the producer's exact output version. V1 inputs
+    // own a separate resource record patched to point at the producer output.
+    const FrameGraphResourceHandle source_handle = consumer->version == 2 ? input_handle : input_resource->output_handle;
+    FrameGraphNode* producer = frame_graph->access_node( input_resource->producer );
+
+    for ( u32 output_index = 0; output_index < producer->outputs.size; ++output_index ) {
+        if ( producer->outputs[ output_index ].index == source_handle.index ) {
+            output_pin_id = frame_graph_output_pin_id( input_resource->producer, output_index );
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void select_frame_graph_debug_image( FrameGraph* frame_graph, FrameGraphResourceHandle selected_handle ) {
+    FrameGraphResourceHandle resolved_handle = selected_handle;
+    FrameGraphResource* resource = frame_graph->access_resource( resolved_handle );
+    if ( resource == nullptr ) {
+        return;
+    }
+
+    // Inputs and versioned outputs can be references. Follow them to the
+    // resource that owns the physical image view used by the image viewer.
+    while ( resource->output_handle.index != k_invalid_index &&
+            resource->output_handle.index != resolved_handle.index ) {
+        resolved_handle = resource->output_handle;
+        resource = frame_graph->access_resource( resolved_handle );
+        if ( resource == nullptr ) {
+            return;
+        }
+    }
+
+    if ( resource->type != FrameGraphResourceType_Texture &&
+         resource->type != FrameGraphResourceType_Attachment &&
+         resource->type != FrameGraphResourceType_ShadingRate &&
+         resource->type != FrameGraphResourceType_Present ) {
+        return;
+    }
+
+    const ImageViewHandle image_view = resource->resource_info.texture.image_view;
+    if ( image_view.is_invalid() ) {
+        return;
+    }
+
+    frame_graph->debug_image_resource = selected_handle;
+    frame_graph->debug_image_view = image_view;
+    frame_graph->debug_image_selection_pending = true;
+}
+
+struct FrameGraphLayoutScratchEntry {
+    FrameGraphNodeHandle ordered_handle;
+    f32                  barycenter;
+
+    f32                  layer_width;
+    f32                  layer_height;
+    f32                  layer_x;
+    f32                  layer_y;
+    u32                  nodes_in_layer;
+    u32                  layer_offset;
+    u32                  layer_write_offset;
+
+    u32                  node_order;
+    f32                  node_y;
+    f32                  node_width;
+    f32                  node_height;
+    f32                  avoidance_offset;
+    bool                 node_is_in_layout;
+};
+
+static void sort_frame_graph_layout_layer( FrameGraphLayoutScratchEntry* layout, u32 begin, u32 end ) {
+    // Layers are normally small, so stable insertion sort is sufficient and keeps
+    // the previous order when two nodes have the same barycenter.
+    for ( u32 i = begin + 1; i < end; ++i ) {
+        const FrameGraphNodeHandle ordered_handle = layout[ i ].ordered_handle;
+        const f32 barycenter = layout[ i ].barycenter;
+        u32 insertion_index = i;
+
+        while ( insertion_index > begin && layout[ insertion_index - 1 ].barycenter > barycenter ) {
+            layout[ insertion_index ].ordered_handle = layout[ insertion_index - 1 ].ordered_handle;
+            layout[ insertion_index ].barycenter = layout[ insertion_index - 1 ].barycenter;
+            --insertion_index;
+        }
+
+        layout[ insertion_index ].ordered_handle = ordered_handle;
+        layout[ insertion_index ].barycenter = barycenter;
+    }
+}
+
 void FrameGraph::debug_ui() {
 
     ed::SetCurrentEditor(ed_context);
-    ed::Begin("Framegraph", ImVec2(0.0, 0.0f));
 
-    int unique_id = 1;
+    const bool layout_requested = ImGui::Button( "Layout nodes" );
+
+    ed::Begin( "Framegraph", ImVec2( 0.0, 0.0f ) );
+
     for ( u32 n = 0; n < nodes.size; ++n ) {
-        FrameGraphNode* node = builder->access_node( nodes[ n ] );
-        ed::BeginNode( unique_id++);
-        ImGui::Text( node->name );
+        const FrameGraphNodeHandle node_handle = nodes[ n ];
+        FrameGraphNode* node = builder->access_node( node_handle );
+        ed::BeginNode( frame_graph_node_id( node_handle ) );
+        const f32 content_start_x = ImGui::GetCursorPosX();
+        f32 input_column_width = 0.0f;
+        f32 output_column_width = 0.0f;
 
         for ( u32 i = 0; i < node->inputs.size; ++i ) {
             FrameGraphResource* resource = access_resource( node->inputs[ i ] );
-            ed::BeginPin( unique_id++, ed::PinKind::Input );
-            ImGui::Text( resource->name );
-            ed::EndPin();
+            input_column_width = max( input_column_width, frame_graph_pin_width( resource->name ) );
         }
 
         for ( u32 o = 0; o < node->outputs.size; ++o ) {
             FrameGraphResource* resource = builder->access_resource( node->outputs[ o ] );
-            ed::BeginPin( unique_id++, ed::PinKind::Output );
-            ImGui::Text( resource->name );
-            ed::EndPin();
+            output_column_width = max( output_column_width, frame_graph_pin_width( resource->name ) );
+        }
+
+        const f32 column_gap = node->inputs.size > 0 && node->outputs.size > 0 ? ImGui::GetStyle().ItemSpacing.x * 4.0f : 0.0f;
+        const f32 pins_width = input_column_width + column_gap + output_column_width;
+        const f32 content_width = max( ImGui::CalcTextSize( node->name ).x, pins_width );
+
+        ImGui::TextUnformatted( node->name );
+
+        const u32 pin_rows = max( node->inputs.size, node->outputs.size );
+        for ( u32 row = 0; row < pin_rows; ++row ) {
+            const f32 row_y = ImGui::GetCursorPosY();
+
+            if ( row < node->inputs.size ) {
+                FrameGraphResource* input_resource = access_resource( node->inputs[ row ] );
+
+                ImGui::SetCursorPos( ImVec2( content_start_x, row_y ) );
+                const ed::PinId input_pin_id = frame_graph_input_pin_id( node_handle, row );
+                const FrameGraphResourceHandle input_handle = node->inputs[ row ];
+                if ( draw_frame_graph_pin( input_resource->name, input_pin_id, ed::PinKind::Input,
+                                           debug_image_resource.index == input_handle.index ) ) {
+                    select_frame_graph_debug_image( this, input_handle );
+                }
+
+                ed::PinId output_pin_id;
+                if ( find_frame_graph_output_pin( this, node_handle, row, output_pin_id ) ) {
+                    ed::Link( frame_graph_link_id( node_handle, row ), output_pin_id, input_pin_id );
+                }
+            }
+
+            if ( row < node->outputs.size ) {
+                FrameGraphResource* output_resource = builder->access_resource( node->outputs[ row ] );
+                const f32 output_width = frame_graph_pin_width( output_resource->name );
+
+                ImGui::SetCursorPos( ImVec2( content_start_x + content_width - output_width, row_y ) );
+                const FrameGraphResourceHandle output_handle = node->outputs[ row ];
+                if ( draw_frame_graph_pin( output_resource->name, frame_graph_output_pin_id( node_handle, row ), ed::PinKind::Output,
+                                           debug_image_resource.index == output_handle.index ) ) {
+                    select_frame_graph_debug_image( this, output_handle );
+                }
+            }
+
         }
 
         ed::EndNode();
     }
     ed::End();
+
+    if ( layout_requested && nodes.size > 0 ) {
+        ArenaAllocator* scratch_allocator = MemoryService::instance()->get_thread_allocator();
+        ArenaScope scratch_scope( scratch_allocator );
+        Array<FrameGraphLayoutScratchEntry> layout;
+        const u32 layout_entry_count = max( node_layer.size, nodes.size + 1 );
+        init_frame_graph_scratch_array( layout, scratch_allocator, layout_entry_count );
+        u32 layer_count = 0;
+
+        const ed::Style& editor_style = ed::GetStyle();
+        // LinkStrength is intended for Bezier curvature and is unnecessarily
+        // large when used verbatim as column spacing.
+        const f32 horizontal_gap = max( editor_style.LinkStrength * 0.6f,
+                                        ImGui::GetTextLineHeight() * 2.0f );
+        const f32 vertical_gap = editor_style.NodePadding.y + editor_style.NodePadding.w + ImGui::GetStyle().ItemSpacing.y;
+        // GetNodeSize() is reported in the current canvas' scaled coordinates,
+        // while SetNodePosition() consumes editor-space coordinates.
+        const f32 node_size_to_editor_space = ed::GetCurrentZoom();
+
+        for ( u32 n = 0; n < nodes.size; ++n ) {
+            const FrameGraphNodeHandle handle = nodes[ n ];
+            const u32 layer = node_layer[ handle.index ];
+            const ImVec2 measured_node_size = ed::GetNodeSize( frame_graph_node_id( handle ) );
+            const ImVec2 node_size( measured_node_size.x * node_size_to_editor_space,
+                                    measured_node_size.y * node_size_to_editor_space );
+
+            layout[ handle.index ].node_width = node_size.x;
+            layer_count = max( layer_count, layer + 1 );
+            layout[ layer ].layer_width = max( layout[ layer ].layer_width, node_size.x );
+            layout[ layer ].layer_height += node_size.y;
+            ++layout[ layer ].nodes_in_layer;
+            layout[ handle.index ].node_is_in_layout = true;
+        }
+
+        for ( u32 layer = 0; layer < layer_count; ++layer ) {
+            layout[ layer + 1 ].layer_offset = layout[ layer ].layer_offset + layout[ layer ].nodes_in_layer;
+            layout[ layer ].layer_write_offset = layout[ layer ].layer_offset;
+        }
+
+        // Group nodes by layer while retaining their topological order as the
+        // deterministic initial ordering.
+        for ( u32 n = 0; n < nodes.size; ++n ) {
+            const FrameGraphNodeHandle handle = nodes[ n ];
+            const u32 layer = node_layer[ handle.index ];
+            layout[ layout[ layer ].layer_write_offset++ ].ordered_handle = handle;
+        }
+
+        for ( u32 layer = 0; layer < layer_count; ++layer ) {
+            for ( u32 i = layout[ layer ].layer_offset; i < layout[ layer + 1 ].layer_offset; ++i ) {
+                layout[ layout[ i ].ordered_handle.index ].node_order = i - layout[ layer ].layer_offset;
+            }
+        }
+
+        // Alternating barycentric sweeps reduce crossings. A forward sweep orders
+        // consumers around their producers; the reverse sweep does the same for
+        // producers around their consumers.
+        for ( u32 iteration = 0; iteration < 4; ++iteration ) {
+            for ( u32 layer = 1; layer < layer_count; ++layer ) {
+                const u32 begin = layout[ layer ].layer_offset;
+                const u32 end = layout[ layer + 1 ].layer_offset;
+
+                for ( u32 i = begin; i < end; ++i ) {
+                    FrameGraphNode* node = access_node( layout[ i ].ordered_handle );
+                    f32 order_sum = 0.0f;
+                    u32 producer_count = 0;
+
+                    for ( u32 input_index = 0; input_index < node->inputs.size; ++input_index ) {
+                        FrameGraphResource* input_resource = access_resource( node->inputs[ input_index ] );
+                        const FrameGraphNodeHandle producer = input_resource->producer;
+
+                        if ( producer.index != k_invalid_index && layout[ producer.index ].node_is_in_layout ) {
+                            order_sum += layout[ producer.index ].node_order;
+                            ++producer_count;
+                        }
+                    }
+
+                    layout[ i ].barycenter = producer_count > 0 ? order_sum / producer_count : f32( i - begin );
+                }
+
+                sort_frame_graph_layout_layer( layout.data, begin, end );
+                for ( u32 i = begin; i < end; ++i ) {
+                    layout[ layout[ i ].ordered_handle.index ].node_order = i - begin;
+                }
+            }
+
+            for ( i32 layer = i32( layer_count ) - 2; layer >= 0; --layer ) {
+                const u32 begin = layout[ layer ].layer_offset;
+                const u32 end = layout[ layer + 1 ].layer_offset;
+
+                for ( u32 i = begin; i < end; ++i ) {
+                    FrameGraphNode* node = access_node( layout[ i ].ordered_handle );
+                    f32 order_sum = 0.0f;
+                    u32 consumer_count = 0;
+
+                    for ( u32 edge_index = 0; edge_index < node->edges.size; ++edge_index ) {
+                        const FrameGraphNodeHandle consumer = node->edges[ edge_index ];
+                        if ( consumer.index < FrameGraphBuilder::k_max_nodes_count && layout[ consumer.index ].node_is_in_layout ) {
+                            order_sum += layout[ consumer.index ].node_order;
+                            ++consumer_count;
+                        }
+                    }
+
+                    layout[ i ].barycenter = consumer_count > 0 ? order_sum / consumer_count : f32( i - begin );
+                }
+
+                sort_frame_graph_layout_layer( layout.data, begin, end );
+                for ( u32 i = begin; i < end; ++i ) {
+                    layout[ layout[ i ].ordered_handle.index ].node_order = i - begin;
+                }
+            }
+        }
+
+        f32 graph_height = 0.0f;
+        for ( u32 layer = 0; layer < layer_count; ++layer ) {
+            if ( layout[ layer ].nodes_in_layer > 1 ) {
+                layout[ layer ].layer_height += vertical_gap * ( layout[ layer ].nodes_in_layer - 1 );
+            }
+            graph_height = max( graph_height, layout[ layer ].layer_height );
+
+            if ( layer > 0 ) {
+                layout[ layer ].layer_x = layout[ layer - 1 ].layer_x + layout[ layer - 1 ].layer_width + horizontal_gap;
+            }
+        }
+
+        for ( u32 layer = 0; layer < layer_count; ++layer ) {
+            layout[ layer ].layer_y = ( graph_height - layout[ layer ].layer_height ) * 0.5f;
+
+            for ( u32 i = layout[ layer ].layer_offset; i < layout[ layer + 1 ].layer_offset; ++i ) {
+                const FrameGraphNodeHandle handle = layout[ i ].ordered_handle;
+                const ImVec2 measured_node_size = ed::GetNodeSize( frame_graph_node_id( handle ) );
+
+                layout[ handle.index ].node_height = measured_node_size.y * node_size_to_editor_space;
+                layout[ handle.index ].node_y = layout[ layer ].layer_y;
+                layout[ layer ].layer_y += layout[ handle.index ].node_height + vertical_gap;
+            }
+        }
+
+        // Translate complete layers toward the average centers of their connected
+        // neighbours. Translating the whole layer preserves the collision-free
+        // packing established above while keeping related passes visually close.
+        for ( u32 iteration = 0; iteration < 4; ++iteration ) {
+            for ( u32 layer = 1; layer < layer_count; ++layer ) {
+                f32 offset_sum = 0.0f;
+                u32 connection_count = 0;
+
+                for ( u32 i = layout[ layer ].layer_offset; i < layout[ layer + 1 ].layer_offset; ++i ) {
+                    const FrameGraphNodeHandle handle = layout[ i ].ordered_handle;
+                    FrameGraphNode* node = access_node( handle );
+                    const f32 node_center = layout[ handle.index ].node_y + layout[ handle.index ].node_height * 0.5f;
+
+                    for ( u32 input_index = 0; input_index < node->inputs.size; ++input_index ) {
+                        FrameGraphResource* input_resource = access_resource( node->inputs[ input_index ] );
+                        const FrameGraphNodeHandle producer = input_resource->producer;
+
+                        if ( producer.index != k_invalid_index && layout[ producer.index ].node_is_in_layout ) {
+                            const f32 producer_center = layout[ producer.index ].node_y + layout[ producer.index ].node_height * 0.5f;
+                            offset_sum += producer_center - node_center;
+                            ++connection_count;
+                        }
+                    }
+                }
+
+                if ( connection_count > 0 ) {
+                    const f32 offset = offset_sum / connection_count;
+                    for ( u32 i = layout[ layer ].layer_offset; i < layout[ layer + 1 ].layer_offset; ++i ) {
+                        layout[ layout[ i ].ordered_handle.index ].node_y += offset;
+                    }
+                }
+            }
+
+            for ( i32 layer = i32( layer_count ) - 2; layer >= 0; --layer ) {
+                f32 offset_sum = 0.0f;
+                u32 connection_count = 0;
+
+                for ( u32 i = layout[ layer ].layer_offset; i < layout[ layer + 1 ].layer_offset; ++i ) {
+                    const FrameGraphNodeHandle handle = layout[ i ].ordered_handle;
+                    FrameGraphNode* node = access_node( handle );
+                    const f32 node_center = layout[ handle.index ].node_y + layout[ handle.index ].node_height * 0.5f;
+
+                    for ( u32 edge_index = 0; edge_index < node->edges.size; ++edge_index ) {
+                        const FrameGraphNodeHandle consumer = node->edges[ edge_index ];
+                        if ( consumer.index < FrameGraphBuilder::k_max_nodes_count && layout[ consumer.index ].node_is_in_layout ) {
+                            const f32 consumer_center = layout[ consumer.index ].node_y + layout[ consumer.index ].node_height * 0.5f;
+                            offset_sum += consumer_center - node_center;
+                            ++connection_count;
+                        }
+                    }
+                }
+
+                if ( connection_count > 0 ) {
+                    const f32 offset = offset_sum / connection_count;
+                    for ( u32 i = layout[ layer ].layer_offset; i < layout[ layer + 1 ].layer_offset; ++i ) {
+                        layout[ layout[ i ].ordered_handle.index ].node_y += offset;
+                    }
+                }
+            }
+        }
+
+        // Direct links that skip one or more layers can otherwise pass through
+        // the nodes in those intermediate layers. Approximate each Bezier by
+        // the line between its pin rows, repel intersecting nodes from that
+        // corridor, then repack every layer to retain node/node separation.
+        const f32 pin_row_step = ( ImGui::GetTextLineHeight() + ImGui::GetStyle().ItemSpacing.y ) * node_size_to_editor_space;
+        const f32 first_pin_offset = ( editor_style.NodePadding.y + ImGui::GetTextLineHeightWithSpacing() +
+                                       ImGui::GetTextLineHeight() * 0.5f ) * node_size_to_editor_space;
+        const f32 link_clearance = max( ImGui::GetStyle().ItemSpacing.y * node_size_to_editor_space,
+                                        k_frame_graph_pin_radius * node_size_to_editor_space );
+
+        for ( u32 iteration = 0; iteration < 6; ++iteration ) {
+            for ( u32 n = 0; n < nodes.size; ++n ) {
+                layout[ nodes[ n ].index ].avoidance_offset = 0.0f;
+            }
+            bool found_intersection = false;
+
+            for ( u32 consumer_index = 0; consumer_index < nodes.size; ++consumer_index ) {
+                const FrameGraphNodeHandle consumer_handle = nodes[ consumer_index ];
+                FrameGraphNode* consumer = access_node( consumer_handle );
+                const u32 consumer_layer = node_layer[ consumer_handle.index ];
+
+                for ( u32 input_index = 0; input_index < consumer->inputs.size; ++input_index ) {
+                    FrameGraphResource* input_resource = access_resource( consumer->inputs[ input_index ] );
+                    const FrameGraphNodeHandle producer_handle = input_resource->producer;
+
+                    if ( producer_handle.index == k_invalid_index || !layout[ producer_handle.index ].node_is_in_layout ) {
+                        continue;
+                    }
+
+                    const u32 producer_layer = node_layer[ producer_handle.index ];
+                    if ( producer_layer + 1 >= consumer_layer ) {
+                        continue;
+                    }
+
+                    FrameGraphNode* producer = access_node( producer_handle );
+                    const FrameGraphResourceHandle source_handle = consumer->version == 2
+                        ? consumer->inputs[ input_index ]
+                        : input_resource->output_handle;
+                    u32 output_index = 0;
+                    for ( ; output_index < producer->outputs.size; ++output_index ) {
+                        if ( producer->outputs[ output_index ].index == source_handle.index ) {
+                            break;
+                        }
+                    }
+
+                    if ( output_index == producer->outputs.size ) {
+                        continue;
+                    }
+
+                    const f32 source_y = layout[ producer_handle.index ].node_y + first_pin_offset +
+                                         output_index * pin_row_step;
+                    const f32 target_y = layout[ consumer_handle.index ].node_y + first_pin_offset + input_index * pin_row_step;
+                    const f32 source_x = layout[ producer_layer ].layer_x + layout[ producer_handle.index ].node_width;
+                    const f32 target_x = layout[ consumer_layer ].layer_x;
+
+                    for ( u32 layer = producer_layer + 1; layer < consumer_layer; ++layer ) {
+                        const f32 sample_x = layout[ layer ].layer_x + layout[ layer ].layer_width * 0.5f;
+                        const f32 linear_interpolation = target_x > source_x
+                            ? ( sample_x - source_x ) / ( target_x - source_x )
+                            : 0.5f;
+                        const f32 clamped_interpolation = min( max( linear_interpolation, 0.0f ), 1.0f );
+                        // Pin links have horizontal Bezier tangents, so their Y
+                        // coordinate follows a smoothstep rather than a line.
+                        const f32 interpolation = clamped_interpolation * clamped_interpolation *
+                                                  ( 3.0f - 2.0f * clamped_interpolation );
+                        const f32 link_y = source_y + ( target_y - source_y ) * interpolation;
+
+                        for ( u32 i = layout[ layer ].layer_offset; i < layout[ layer + 1 ].layer_offset; ++i ) {
+                            const FrameGraphNodeHandle obstacle = layout[ i ].ordered_handle;
+                            const f32 obstacle_top = layout[ obstacle.index ].node_y;
+                            const f32 obstacle_bottom = obstacle_top + layout[ obstacle.index ].node_height;
+
+                            if ( link_y + link_clearance <= obstacle_top ||
+                                 link_y - link_clearance >= obstacle_bottom ) {
+                                continue;
+                            }
+
+                            const f32 obstacle_center = ( obstacle_top + obstacle_bottom ) * 0.5f;
+                            const f32 displacement = link_y < obstacle_center
+                                ? link_y + link_clearance - obstacle_top
+                                : link_y - link_clearance - obstacle_bottom;
+
+                            if ( fabsf( displacement ) > fabsf( layout[ obstacle.index ].avoidance_offset ) ) {
+                                layout[ obstacle.index ].avoidance_offset = displacement;
+                            }
+                            found_intersection = true;
+                        }
+                    }
+                }
+            }
+
+            if ( !found_intersection ) {
+                break;
+            }
+
+            for ( u32 n = 0; n < nodes.size; ++n ) {
+                const FrameGraphNodeHandle handle = nodes[ n ];
+                layout[ handle.index ].node_y += layout[ handle.index ].avoidance_offset;
+            }
+
+            // Resolve any collisions caused by the link repulsion while keeping
+            // the crossing-minimized order within each layer.
+            for ( u32 layer = 0; layer < layer_count; ++layer ) {
+                for ( u32 i = layout[ layer ].layer_offset + 1; i < layout[ layer + 1 ].layer_offset; ++i ) {
+                    const FrameGraphNodeHandle previous = layout[ i - 1 ].ordered_handle;
+                    const FrameGraphNodeHandle current = layout[ i ].ordered_handle;
+                    layout[ current.index ].node_y = max( layout[ current.index ].node_y,
+                                                          layout[ previous.index ].node_y + layout[ previous.index ].node_height + vertical_gap );
+                }
+
+                if ( layout[ layer + 1 ].layer_offset > layout[ layer ].layer_offset ) {
+                    for ( i32 i = i32( layout[ layer + 1 ].layer_offset ) - 2; i >= i32( layout[ layer ].layer_offset ); --i ) {
+                        const FrameGraphNodeHandle current = layout[ i ].ordered_handle;
+                        const FrameGraphNodeHandle next = layout[ i + 1 ].ordered_handle;
+                        layout[ current.index ].node_y = min( layout[ current.index ].node_y,
+                                                              layout[ next.index ].node_y - layout[ current.index ].node_height - vertical_gap );
+                    }
+                }
+            }
+        }
+
+        for ( u32 layer = 0; layer < layer_count; ++layer ) {
+            for ( u32 i = layout[ layer ].layer_offset; i < layout[ layer + 1 ].layer_offset; ++i ) {
+                const FrameGraphNodeHandle handle = layout[ i ].ordered_handle;
+
+                ed::SetNodePosition( frame_graph_node_id( handle ), ImVec2( layout[ layer ].layer_x, layout[ handle.index ].node_y ) );
+            }
+        }
+
+        ed::NavigateToContent( 0.0f );
+    }
+
     ed::SetCurrentEditor(nullptr);
 
+}
+
+bool FrameGraph::consume_debug_image_selection( ImageViewHandle& image_view ) {
+    if ( !debug_image_selection_pending ) {
+        return false;
+    }
+
+    debug_image_selection_pending = false;
+    image_view = debug_image_view;
+    return image_view.is_valid();
+}
+
+void FrameGraph::clear_debug_image_selection() {
+    debug_image_resource.index = k_invalid_index;
+    debug_image_view = {};
+    debug_image_selection_pending = false;
 }
 
 void FrameGraph::add_node( FrameGraphNodeCreation& creation ) {
