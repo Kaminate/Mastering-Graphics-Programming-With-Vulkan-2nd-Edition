@@ -3377,7 +3377,7 @@ DescriptorSetLayoutHandle GpuDevice::create_descriptor_set_layout( const Descrip
     descriptor_set_layout->bindless = creation.bindless ? 1 : 0;
     descriptor_set_layout->dynamic = creation.dynamic ? 1 : 0;
 
-    const bool skip_bindless_bindings = bindless_supported && !creation.bindless;
+    const bool skip_bindless_bindings = bindless_supported && !creation.bindless && !creation.preserve_all_bindings;
     u32 used_bindings = 0;
 
     ArenaScope scoped_allocator( MemoryService::instance()->get_thread_allocator() );
@@ -3386,12 +3386,21 @@ DescriptorSetLayoutHandle GpuDevice::create_descriptor_set_layout( const Descrip
 
     for ( u32 r = 0; r < creation.bindings.size; ++r ) {
         const VkDescriptorSetLayoutBinding& input_binding = creation.bindings[ r ];
+#if 1
+
+        if ( creation.set_index == 0 && skip_bindless_bindings &&
+            ( input_binding.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
+              input_binding.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ) ) {
+            continue;
+        }
+#else
         // [TAG: BINDLESS]
         // Skip bindings for images and textures as they are bindless, thus bound in the global bindless arrays (one for images, one for textures).
         // TODO(marco): better solution to allow individual image views to be bound
         if ( creation.set_index == 0 && skip_bindless_bindings /*&& (binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || binding.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)*/ ) {
             continue;
         }
+#endif
 
         VkDescriptorSetLayoutBinding& vk_binding = vk_bindings.push_use();
         vk_binding = input_binding;

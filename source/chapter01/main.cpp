@@ -801,6 +801,7 @@ int main( int argc, char** argv ) {
                 { 5,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 }, // emissiveTexture
                 { 6,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 }, // normalTexture
             },
+            .preserve_all_bindings = true,
             .name = "default_descriptor_set_layout"
         };
         // Setting it into pipeline

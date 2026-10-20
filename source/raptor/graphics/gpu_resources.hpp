@@ -373,6 +373,7 @@ struct DescriptorSetLayoutCreation {
     u32                             set_index   = 0;
     bool                            bindless    = false;
     bool                            dynamic     = false;
+    bool                            preserve_all_bindings = false;
 
     cstring                         name        = nullptr;
 
