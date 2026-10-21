@@ -36,6 +36,19 @@ struct GpuPipelineStatistics;
 //
 struct GpuDescriptorPoolCreation {
 
+#if 1
+    u16         samplers                = 1024;
+    u16         combined_image_samplers = 1024;
+    u16         sampled_image           = 1024;
+    u16         storage_image           = 1024;
+    u16         uniform_texel_buffers   = 1024;
+    u16         storage_texel_buffers   = 1024;
+    u16         uniform_buffer          = 1024;
+    u16         storage_buffer          = 1024;
+    u16         uniform_buffer_dynamic  = 1024;
+    u16         storage_buffer_dynamic  = 1024;
+    u16         input_attachments       = 1024;
+#else
     u16         samplers                = 256;
     u16         combined_image_samplers = 256;
     u16         sampled_image           = 256;
@@ -47,6 +60,8 @@ struct GpuDescriptorPoolCreation {
     u16         uniform_buffer_dynamic  = 256;
     u16         storage_buffer_dynamic  = 256;
     u16         input_attachments       = 256;
+#endif
+
     u16         tlas                    = 8;
 
 }; // struct GpuDescriptorPoolCreation
