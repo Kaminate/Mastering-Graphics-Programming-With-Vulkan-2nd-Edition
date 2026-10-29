@@ -1318,6 +1318,15 @@ int main( int argc, char** argv ) {
             gfx_cb->begin();
             gpu.gpu_profiler->begin_command_buffer( gfx_cb );
 
+            // Make the image barrier sync with COLOR_ATTACHMENT_OUTPUT
+            {
+              raptor::ImageHandle swapchain_handle = gpu.get_current_swapchain_image();
+              Image* img = gpu.get_image( swapchain_handle );
+              RASSERT( img && img->vk_image != VK_NULL_HANDLE );
+              img->sync_state.stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+              img->sync_state.access = VK_ACCESS_2_NONE;
+            }
+
             gfx_cb->add_image_barrier(
                 gpu.get_current_swapchain_image(),
                 raptor::range_aspect( VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 ),
@@ -1327,6 +1336,22 @@ int main( int argc, char** argv ) {
                     .layout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL
                 }
             );
+
+#if 1 // test, image depth
+            gfx_cb->add_image_barrier(
+                gpu.get_current_swapchain_depth_image(),
+                raptor::range_aspect( VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 ),
+                ImageSyncState{
+                    .stage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+                           | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                    .access = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+                            | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+                    .layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                }
+            );
+#endif
+
+            gfx_cb->flush_barriers();
 
             gfx_cb->push_marker( "Frame" );
 
@@ -1386,7 +1411,7 @@ int main( int argc, char** argv ) {
                 raptor::range_aspect( VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 ),
                 ImageSyncState{
                     .stage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                    .access = VK_ACCESS_2_MEMORY_READ_BIT,
+                    .access = VK_ACCESS_2_NONE, // VK_ACCESS_2_MEMORY_READ_BIT,
                     .layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
                 }
             );
@@ -1394,6 +1419,8 @@ int main( int argc, char** argv ) {
             /*util_add_image_barrier( &gpu, gfx_cb->vk_command_buffer, gpu.get_current_swapchain_image(),
                                     RESOURCE_STATE_PRESENT,
                                     0, 1, false );*/
+
+            gfx_cb->flush_barriers();
 
             // Send commands to GPU
             gpu.gpu_profiler->end_command_buffer( gfx_cb );

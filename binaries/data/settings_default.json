@@ -15,7 +15,7 @@
             "direction": [ 1.0, 0.0, 0.0 ]
         },
         "gpu": {
-            "debug": "Default",
+            "debug": "Validation",
             "present_mode": "VSync",
             "buffer_pool": 1024
         },
